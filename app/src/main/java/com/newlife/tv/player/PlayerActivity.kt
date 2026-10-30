@@ -392,7 +392,7 @@ class PlayerActivity : ComponentActivity() {
     private fun trackDialog(type: Int, title: String) {
         val p = player ?: return
         TrackSelectionDialogBuilder(this, title, p, type)
-            .setShowDisabledOption(type == C.TRACK_TYPE_TEXT)
+
             .setAllowAdaptiveSelections(type == C.TRACK_TYPE_VIDEO)
             .build()
             .show()
