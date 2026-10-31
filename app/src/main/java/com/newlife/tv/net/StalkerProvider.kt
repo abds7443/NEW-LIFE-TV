@@ -324,12 +324,23 @@ class StalkerProvider(override val profile: Profile) : IptvProvider {
     private fun clean(cmd: String): String =
         cmd.trim().replace(Regex("^(ffmpeg|ffrt\\d*|auto|rtsp_ffrt|ffrt)\\s+", RegexOption.IGNORE_CASE), "").trim()
 
-    private fun req(url: String, title: String, live: Boolean) =
-        PlayRequest(url = url, userAgent = playerUa, title = title, isLive = live)
+    private fun req(url: String, title: String, live: Boolean) = PlayRequest(
+        url = url,
+        headers = mapOf("Cookie" to "mac=${enc(mac)}; stb_lang=${profile.language.ifBlank { "en" }}; timezone=${enc(tz)}"),
+        userAgent = playerUa, title = title, isLive = live,
+    )
+
+    /** Some portals return "...&stream=&..." (empty id); fill it from the original command. */
+    private fun fixStream(url: String, original: String, id: String): String {
+        if (!Regex("[?&]stream=(&|$)").containsMatchIn(url)) return url
+        val sid = Regex("/ch/(\\d+)").find(original)?.groupValues?.get(1)
+            ?: Regex("stream=(\\d+)").find(original)?.groupValues?.get(1) ?: id
+        return url.replace(Regex("([?&]stream=)(?=&|$)"), "\$1$sid")
+    }
 
     override suspend fun resolve(entry: MediaEntry): PlayRequest = withContext(Dispatchers.IO) {
         when (entry.kind) {
-            ContentKind.LIVE -> req(createLink("itv", entry.cmd), entry.title, true)
+            ContentKind.LIVE -> req(fixStream(createLink("itv", entry.cmd), entry.cmd, entry.id), entry.title, true)
             else -> req(createLink("vod", entry.cmd), entry.title, false)
         }
     }

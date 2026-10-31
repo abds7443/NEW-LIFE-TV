@@ -24,6 +24,8 @@ import com.newlife.tv.data.Season
 import com.newlife.tv.net.IptvProvider
 import com.newlife.tv.net.ProviderFactory
 import com.newlife.tv.net.Session
+import com.newlife.tv.net.SpeedTest
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.newlife.tv.net.Xmltv
 import com.newlife.tv.player.ExternalPlayer
 import com.newlife.tv.player.PlayerActivity
@@ -44,7 +46,7 @@ sealed interface Screen {
 
 enum class Section(val kind: ContentKind?) {
     LIVE(ContentKind.LIVE), VOD(ContentKind.VOD), SERIES(ContentKind.SERIES), GUIDE(ContentKind.LIVE),
-    FAVORITES(null), SEARCH(null), RECORDINGS(null), ACCOUNT(null), SETTINGS(null)
+    FAVORITES(null), SEARCH(null), RECORDINGS(null), SPEED(null), ACCOUNT(null), SETTINGS(null)
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -287,7 +289,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ================================================================ playback
     private fun launchPlayer(context: Context, req: PlayRequest, entry: MediaEntry?, list: List<MediaEntry>) {
-        if (ProfileStore.settings.value.externalPlayer) {
+        val st = ProfileStore.settings.value
+        if (st.playerEngine == "external" || st.externalPlayer) {
             ExternalPlayer.open(context, req); return
         }
         Session.zapList = list
@@ -362,5 +365,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         RecordingScheduler.cancel(ctx, s.id)
         RecordingService.stop(ctx, s.id)
         ProfileStore.removeSchedule(s.id)
+    }
+
+    // ================================================================ speed test
+    var netPing by mutableStateOf<Long?>(null); private set
+    var netMbps by mutableStateOf<Double?>(null); private set
+    var srvPing by mutableStateOf<Long?>(null); private set
+    var srvMbps by mutableStateOf<Double?>(null); private set
+    var srvChannel by mutableStateOf(""); private set
+    var speedLive by mutableStateOf(0.0); private set
+    var speedRunning by mutableStateOf<String?>(null); private set
+    var speedError by mutableStateOf<String?>(null); private set
+    private var speedJob: Job? = null
+
+    fun stopSpeedTest() { speedJob?.cancel(); speedRunning = null }
+
+    fun testInternet() {
+        speedJob?.cancel()
+        speedError = null; netPing = null; netMbps = null; speedLive = 0.0
+        speedRunning = "net"
+        speedJob = viewModelScope.launch {
+            try {
+                netPing = SpeedTest.internetLatency()
+                netMbps = SpeedTest.internetDownload(10_000) { speedLive = it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                speedError = L.t("فشل اختبار الإنترنت: ", "Internet test failed: ") + e.message
+            } finally {
+                if (speedRunning == "net") speedRunning = null
+            }
+        }
+    }
+
+    fun testServer() {
+        val p = provider ?: run { toast = L.t("سجّل الدخول إلى اشتراك أولاً", "Log in to a subscription first"); return }
+        speedJob?.cancel()
+        speedError = null; srvPing = null; srvMbps = null; speedLive = 0.0
+        speedRunning = "srv"
+        speedJob = viewModelScope.launch {
+            try {
+                val url = p.profile.portalUrl.trim().let { if (it.startsWith("http")) it else "http://$it" }
+                url.toHttpUrlOrNull()?.let { h ->
+                    srvPing = SpeedTest.latency("${h.scheme}://${h.host}:${h.port}/", mapOf("User-Agent" to p.playerUa))
+                }
+                val channel = focused?.takeIf { it.kind == ContentKind.LIVE }
+                    ?: entries.firstOrNull { it.kind == ContentKind.LIVE }
+                    ?: runCatching { p.entries(ContentKind.LIVE, IptvProvider.ALL).firstOrNull() }.getOrNull()
+                if (channel == null) { speedError = L.t("لا توجد قناة لاختبارها", "No channel to test"); return@launch }
+                srvChannel = channel.title
+                val req = p.resolve(channel)
+                srvMbps = SpeedTest.streamSpeed(req, 10_000) { speedLive = it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                speedError = L.t("فشل اختبار السيرفر: ", "Server test failed: ") + e.message
+            } finally {
+                if (speedRunning == "srv") speedRunning = null
+            }
+        }
     }
 }

@@ -59,7 +59,21 @@ fun SettingsContent(vm: MainViewModel) {
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         ChoiceRow(L.t("اللغة / Language", "Language / اللغة"), listOf(true to "العربية", false to "English"), s.arabic) { v -> update { it.copy(arabic = v) } }
-        ChoiceRow(L.t("المشغل", "Player"), listOf(false to L.t("المشغل الداخلي", "Built-in player"), true to L.t("مشغل خارجي (VLC / MX)", "External player (VLC / MX)")), s.externalPlayer) { v -> update { it.copy(externalPlayer = v) } }
+        ChoiceRow(
+            L.t("مشغل الفيديو", "Video player"),
+            listOf(
+                "auto" to L.t("تلقائي (ExoPlayer ثم VLC) — مستحسن", "Auto (ExoPlayer, then VLC) — recommended"),
+                "vlc" to L.t("VLC (أقوى توافق مع القنوات)", "VLC (best IPTV compatibility)"),
+                "exo" to "ExoPlayer",
+                "external" to L.t("مشغل خارجي مثبت", "Installed external player"),
+            ),
+            if (s.externalPlayer) "external" else s.playerEngine,
+        ) { v -> update { it.copy(playerEngine = v, externalPlayer = false) } }
+        ChoiceRow(
+            L.t("المشغل الخارجي المفضل", "Preferred external player"),
+            com.newlife.tv.player.ExternalPlayer.KNOWN,
+            s.externalPackage,
+        ) { v -> update { it.copy(externalPackage = v) } }
         ChoiceRow(L.t("صورة في صورة تلقائياً عند الخروج", "Auto picture-in-picture on Home"), yesNo, s.autoPip) { v -> update { it.copy(autoPip = v) } }
         ChoiceRow(L.t("حجم التخزين المؤقت (ثانية)", "Buffer size (seconds)"), listOf(3, 8, 15, 30, 60).map { it to "$it" }, s.bufferSeconds) { v -> update { it.copy(bufferSeconds = v) } }
         ChoiceRow(

@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
@@ -98,6 +99,7 @@ private fun sectionIcon(s: Section): ImageVector = when (s) {
     Section.FAVORITES -> Icons.Filled.Favorite
     Section.SEARCH -> Icons.Filled.Search
     Section.RECORDINGS -> Icons.Filled.FiberManualRecord
+    Section.SPEED -> Icons.Filled.Speed
     Section.ACCOUNT -> Icons.Filled.AccountCircle
     Section.SETTINGS -> Icons.Filled.Settings
 }
@@ -110,6 +112,7 @@ private fun sectionLabel(s: Section): String = when (s) {
     Section.FAVORITES -> L.t("المفضلة", "Favorites")
     Section.SEARCH -> L.t("بحث", "Search")
     Section.RECORDINGS -> L.t("التسجيلات", "Recordings")
+    Section.SPEED -> L.t("اختبار السرعة", "Speed test")
     Section.ACCOUNT -> L.t("الحساب والاتصال", "Account & connection")
     Section.SETTINGS -> L.t("الإعدادات", "Settings")
 }
@@ -160,6 +163,7 @@ fun HomeScreen(vm: MainViewModel) {
                     Section.FAVORITES -> FavoritesSection(vm)
                     Section.SEARCH -> SearchSection(vm)
                     Section.RECORDINGS -> RecordingsSection(vm)
+                    Section.SPEED -> SpeedSection(vm)
                     Section.ACCOUNT -> AccountSection(vm)
                     Section.SETTINGS -> SettingsContent(vm)
                 }
@@ -724,5 +728,80 @@ private fun AccountSection(vm: MainViewModel) {
             if (p != null) NButton(L.t("تعديل الاشتراك", "Edit subscription"), Icons.Filled.Edit) { vm.push(Screen.Edit(p)) }
             NButton(L.t("تسجيل الخروج", "Log out"), Icons.Filled.Logout, danger = true) { vm.logout() }
         }
+    }
+}
+
+// ============================================================================ speed test
+
+@Composable
+private fun SpeedCard(title: String, ping: Long?, mbps: Double?, live: Double?, running: Boolean, note: String, modifier: Modifier, button: @Composable () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(14.dp)).background(Palette.Surface).padding(16.dp)) {
+        Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        if (note.isNotBlank()) Text(note, color = Palette.Text2, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            val shown = if (running) live else mbps
+            Text(shown?.let { "%.1f".format(it) } ?: "—", fontSize = 44.sp, fontWeight = FontWeight.Black,
+                color = if (running) Palette.Gold else Palette.Accent)
+            Spacer(Modifier.width(6.dp))
+            Text("Mbps", color = Palette.Text2, modifier = Modifier.padding(bottom = 8.dp))
+        }
+        Text(L.t("زمن الاستجابة (Ping): ", "Latency (ping): ") + (ping?.let { "$it ms" } ?: "—"), color = Palette.Text2)
+        if (running) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
+        Spacer(Modifier.height(10.dp))
+        button()
+    }
+}
+
+@Composable
+private fun SpeedSection(vm: MainViewModel) {
+    val ctx = LocalContext.current
+    val network = remember { com.newlife.tv.net.SpeedTest.networkType(ctx) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        if (network.isNotBlank()) Text(L.t("نوع الاتصال: ", "Connection: ") + network, color = Palette.Text2)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            SpeedCard(
+                L.t("سرعة الإنترنت", "Internet speed"), vm.netPing, vm.netMbps, vm.speedLive, vm.speedRunning == "net",
+                L.t("تنزيل من خوادم اختبار عالمية", "Download from public test servers"), Modifier.weight(1f),
+            ) {
+                if (vm.speedRunning == "net") NButton(L.t("إيقاف", "Stop"), Icons.Filled.Stop, danger = true) { vm.stopSpeedTest() }
+                else NButton(L.t("ابدأ الاختبار", "Start test"), Icons.Filled.Speed, primary = true, enabled = vm.speedRunning == null) { vm.testInternet() }
+            }
+            SpeedCard(
+                L.t("سرعة السيرفر (الاشتراك)", "Server (subscription) speed"), vm.srvPing, vm.srvMbps, vm.speedLive, vm.speedRunning == "srv",
+                if (vm.srvChannel.isNotBlank()) L.t("القناة المختبرة: ", "Tested channel: ") + vm.srvChannel
+                else L.t("يقيس سرعة وصول بث قناة حقيقية من السيرفر", "Measures how fast a real channel arrives from the server"),
+                Modifier.weight(1f),
+            ) {
+                if (vm.speedRunning == "srv") NButton(L.t("إيقاف", "Stop"), Icons.Filled.Stop, danger = true) { vm.stopSpeedTest() }
+                else NButton(L.t("ابدأ الاختبار", "Start test"), Icons.Filled.Speed, primary = true, enabled = vm.speedRunning == null && vm.activeProfile != null) { vm.testServer() }
+            }
+        }
+        vm.speedError?.let { Text("⚠ $it", color = Palette.Danger, modifier = Modifier.padding(top = 10.dp)) }
+
+        SectionTitle(L.t("ماذا تستطيع أن تشاهد؟", "What can you watch?"), Modifier.padding(top = 16.dp))
+        val net = vm.netMbps
+        val srv = vm.srvMbps
+        val best = listOfNotNull(net, srv).minOrNull()
+        listOf("SD" to 3.0, "HD 720p" to 6.0, "Full HD 1080p" to 10.0, "4K UHD" to 25.0, "8K" to 60.0).forEach { (q, need) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(q, Modifier.width(160.dp), fontWeight = FontWeight.SemiBold)
+                Text(L.t("يحتاج ", "needs ") + "≥ ${need.toInt()} Mbps", color = Palette.Text2, modifier = Modifier.width(170.dp))
+                when {
+                    best == null -> Text("—", color = Palette.Text2)
+                    net != null && net < need -> Text(L.t("✗ الإنترنت غير كافٍ", "✗ internet too slow"), color = Palette.Danger)
+                    else -> Text("✓", color = Palette.Accent, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            L.t(
+                "ملاحظة: سرعة السيرفر في البث المباشر تقارب معدل بث القناة نفسها (البث يُرسل بسرعته الطبيعية)، لذا قيمة 4–10 Mbps طبيعية لقناة HD. إذا كانت أقل من ذلك مع إنترنت سريع فالمشكلة غالباً من السيرفر.",
+                "Note: for live channels the server speed is close to the channel bitrate (live streams arrive in real time), so 4–10 Mbps is normal for an HD channel. If it is lower while your internet is fast, the server is usually the bottleneck.",
+            ),
+            color = Palette.Text2, fontSize = 12.sp,
+        )
     }
 }

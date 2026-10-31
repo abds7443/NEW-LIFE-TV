@@ -15,6 +15,8 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         vectorDrawables.useSupportLibrary = true
+        // TV boxes, phones and tablets are ARM; this keeps the APK size reasonable with the VLC engine.
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
     buildTypes {
@@ -61,6 +63,9 @@ dependencies {
     implementation("androidx.media3:media3-datasource-okhttp:$media3")
     implementation("androidx.media3:media3-datasource-rtmp:$media3")
     implementation("androidx.media3:media3-ui:$media3")
+
+    // VLC engine: plays almost every IPTV format/codec (TS, HLS, RTSP, RTMP, UDP, AC3/E-AC3 audio...)
+    implementation("org.videolan.android:libvlc-all:3.5.1")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")

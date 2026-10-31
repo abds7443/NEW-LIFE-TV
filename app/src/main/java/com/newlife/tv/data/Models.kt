@@ -109,6 +109,10 @@ data class AppSettings(
     val arabic: Boolean = true,
     val autoPip: Boolean = true,
     val externalPlayer: Boolean = false,
+    /** auto = ExoPlayer then VLC, exo, vlc, external */
+    val playerEngine: String = "auto",
+    /** package of the preferred external player ("" = ask every time) */
+    val externalPackage: String = "",
     val recordStorageIndex: Int = 0,
     val bufferSeconds: Int = 15,
     val resizeMode: Int = 0,

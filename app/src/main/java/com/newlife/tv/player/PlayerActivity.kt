@@ -24,6 +24,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -31,9 +32,11 @@ import androidx.annotation.OptIn
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -59,12 +62,23 @@ import com.newlife.tv.data.PlayRequest
 import com.newlife.tv.data.ProfileStore
 import com.newlife.tv.net.Http
 import com.newlife.tv.net.Session
+import com.newlife.tv.net.StreamProbe
 import com.newlife.tv.record.RecordingService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
 
+/**
+ * Full-screen player with two engines:
+ *  - ExoPlayer (fast start, adaptive quality, DRM)
+ *  - VLC (plays nearly every IPTV format and audio codec)
+ * In "auto" mode it starts with ExoPlayer and switches to VLC by itself if the stream fails.
+ */
 @OptIn(UnstableApi::class)
 class PlayerActivity : ComponentActivity() {
 
@@ -72,6 +86,9 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_REQ = "req"
         private const val EXTRA_ENTRY = "entry"
         private const val EXTRA_INDEX = "index"
+        const val ENGINE_EXO = "exo"
+        const val ENGINE_VLC = "vlc"
+        private const val START_TIMEOUT_MS = 20_000L
         private val gson = Gson()
 
         fun start(ctx: Context, req: PlayRequest, entry: MediaEntry?, index: Int = -1) {
@@ -84,13 +101,37 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private var player: ExoPlayer? = null
-    private lateinit var playerView: PlayerView
-    private lateinit var topBar: LinearLayout
+    // ------------------------------------------------------------------ engines
+    private interface Engine {
+        val name: String
+        val view: View
+        fun play(r: PlayRequest)
+        fun release()
+        fun setPlaying(play: Boolean)
+        fun isPlaying(): Boolean
+        fun seekBy(ms: Long)
+        fun position(): Long
+        fun duration(): Long
+        fun setResize(idx: Int)
+        fun videoSize(): Pair<Int, Int>
+        fun tracks(kind: Int) // 0 = video, 1 = audio, 2 = subtitles
+    }
+
+    private lateinit var container: FrameLayout
+    private lateinit var overlay: LinearLayout
     private lateinit var info: TextView
     private lateinit var zapInfo: TextView
+    private lateinit var spinner: ProgressBar
+    private lateinit var firstButton: Button
+    private var playButton: Button? = null
     private var recButton: Button? = null
+    private var engineButton: Button? = null
 
+    private var engine: Engine? = null
+    private var engineKind = ENGINE_EXO
+    private val tried = mutableSetOf<String>()
+    private var forceHls = false
+    private var ready = false
     private var req: PlayRequest? = null
     private var entry: MediaEntry? = null
     private var index = -1
@@ -100,22 +141,22 @@ class PlayerActivity : ComponentActivity() {
     private var nowProgram = ""
     private var recordingId: String? = null
     private var keepAliveJob: Job? = null
+    private var startJob: Job? = null
+    private var hideJob: Job? = null
+    private var tickJob: Job? = null
     private var hideZapJob: Job? = null
+    private var errorDialog: AlertDialog? = null
 
-    private val resizeModes = intArrayOf(
-        AspectRatioFrameLayout.RESIZE_MODE_FIT,
-        AspectRatioFrameLayout.RESIZE_MODE_FILL,
-        AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
-        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH,
-    )
+    private val bufferMs get() = (ProfileStore.settings.value.bufferSeconds.coerceIn(2, 120) * 1000).coerceAtLeast(2500)
     private val resizeNames get() = listOf(L.t("ملاءمة", "Fit"), L.t("ملء الشاشة", "Stretch"), L.t("تكبير", "Zoom"), L.t("عرض كامل", "Fit width"))
+    private val isLive get() = req?.isLive == true || (entry?.kind == ContentKind.LIVE && req?.url?.startsWith("file") != true)
 
     // ------------------------------------------------------------------ setup
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ProfileStore.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        resizeIdx = ProfileStore.settings.value.resizeMode.coerceIn(0, resizeModes.size - 1)
+        resizeIdx = ProfileStore.settings.value.resizeMode.coerceIn(0, 3)
         buildUi()
         handleIntent(intent)
     }
@@ -130,51 +171,57 @@ class PlayerActivity : ComponentActivity() {
 
     private fun buildUi() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        playerView = PlayerView(this).apply {
-            useController = true
-            controllerShowTimeoutMs = 5000
-            setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
-            keepScreenOn = true
-            resizeMode = resizeModes[resizeIdx]
-        }
-        root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        container = FrameLayout(this)
+        root.addView(container, FrameLayout.LayoutParams(-1, -1))
 
-        topBar = LinearLayout(this).apply {
+        // transparent layer that toggles the controls on tap (touch screens)
+        val touch = View(this).apply {
+            isFocusable = false
+            setOnClickListener { if (overlay.visibility == View.VISIBLE) hideOverlay() else showOverlay() }
+        }
+        root.addView(touch, FrameLayout.LayoutParams(-1, -1))
+
+        spinner = ProgressBar(this).apply { visibility = View.GONE }
+        root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
+
+        overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xB3000000.toInt())
+            setBackgroundColor(0xCC000000.toInt())
             setPadding(dp(12), dp(8), dp(12), dp(8))
             visibility = View.GONE
         }
         info = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 16f; setTypeface(typeface, Typeface.BOLD); maxLines = 2
+            setTextColor(Color.WHITE); textSize = 15f; setTypeface(typeface, Typeface.BOLD); maxLines = 3
         }
-        topBar.addView(info)
+        overlay.addView(info)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun add(label: String, action: () -> Unit): Button = Button(this).apply {
             text = label; isAllCaps = false; textSize = 13f
-            setOnClickListener { action() }
+            setOnClickListener { scheduleHide(); action() }
             buttons.addView(this, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
         }
-        add(L.t("الجودة", "Quality")) { trackDialog(C.TRACK_TYPE_VIDEO, L.t("الجودة / الدقة", "Video quality")) }
-        add(L.t("الصوت", "Audio")) { trackDialog(C.TRACK_TYPE_AUDIO, L.t("مسار الصوت", "Audio track")) }
-        add(L.t("الترجمة", "Subtitles")) { trackDialog(C.TRACK_TYPE_TEXT, L.t("الترجمة", "Subtitles")) }
+        playButton = add("❚❚") { togglePlay() }
+        firstButton = playButton!!
+        add("-10s") { engine?.seekBy(-10_000) }
+        add("+10s") { engine?.seekBy(10_000) }
+        engineButton = add("VLC") { switchEngine() }
+        add(L.t("الجودة", "Quality")) { engine?.tracks(0) }
+        add(L.t("الصوت", "Audio")) { engine?.tracks(1) }
+        add(L.t("الترجمة", "Subtitles")) { engine?.tracks(2) }
         add(L.t("أبعاد الصورة", "Aspect")) { cycleResize() }
         add(L.t("صورة في صورة", "PiP")) { enterPip() }
         recButton = add(L.t("تسجيل", "Record")) { recordDialog() }
         add(L.t("مشغل خارجي", "External player")) { req?.let { ExternalPlayer.open(this, it) } }
         add(L.t("المفضلة", "Favorite")) { toggleFav() }
-        topBar.addView(HorizontalScrollView(this).apply { isFillViewport = true; addView(buttons) })
-        root.addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        add(L.t("فحص الرابط", "Check link")) { showErrorDialog(L.t("فحص يدوي للرابط", "Manual link check"), manual = true) }
+        overlay.addView(HorizontalScrollView(this).apply { isFillViewport = true; addView(buttons) })
+        root.addView(overlay, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         zapInfo = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 22f; setBackgroundColor(0xB3000000.toInt())
             setPadding(dp(20), dp(10), dp(20), dp(10)); visibility = View.GONE
         }
-        root.addView(zapInfo, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(90) })
-
-        playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
-            topBar.visibility = if (v == View.VISIBLE && !inPip()) View.VISIBLE else View.GONE
-        })
+        root.addView(zapInfo, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(60) })
         setContentView(root)
     }
 
@@ -182,133 +229,162 @@ class PlayerActivity : ComponentActivity() {
         val r = intent.getStringExtra(EXTRA_REQ)?.let { gson.fromJson(it, PlayRequest::class.java) } ?: run { finish(); return }
         entry = intent.getStringExtra(EXTRA_ENTRY)?.let { gson.fromJson(it, MediaEntry::class.java) }
         index = intent.getIntExtra(EXTRA_INDEX, -1)
-        retries = 0
-        play(r)
+        newSession()
+        startPlayback(r, null)
+    }
+
+    private fun newSession() {
+        retries = 0; forceHls = false; tried.clear()
+        errorDialog?.dismiss(); errorDialog = null
     }
 
     // ---------------------------------------------------------------- playback
-    private fun play(r: PlayRequest) {
+    private fun preferredEngine(): String =
+        if (ProfileStore.settings.value.playerEngine == ENGINE_VLC) ENGINE_VLC else ENGINE_EXO
+
+    private fun startPlayback(r: PlayRequest, kind: String?) {
         req = r
-        releasePlayer()
-        val settings = ProfileStore.settings.value
-        val ua = r.userAgent.ifBlank { DeviceIdentity.DEFAULT_PLAYER_UA }
-
-        val http = OkHttpDataSource.Factory(Http.client).setUserAgent(ua).setDefaultRequestProperties(r.headers)
-        val dataSource = DefaultDataSource.Factory(this, http)
-        val extractors = DefaultExtractorsFactory()
-            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS)
-        val msf = DefaultMediaSourceFactory(dataSource, extractors)
-
-        val item = MediaItem.Builder().setUri(Uri.parse(r.url)).setMediaMetadata(
-            androidx.media3.common.MediaMetadata.Builder().setTitle(r.title).build()
-        )
-        mimeFor(r.url)?.let { item.setMimeType(it) }
-        if (r.drmLicense.isNotBlank()) {
-            val scheme = r.drmScheme.lowercase()
-            val uuid = when {
-                scheme.contains("clearkey") -> C.CLEARKEY_UUID
-                scheme.contains("playready") -> C.PLAYREADY_UUID
-                else -> C.WIDEVINE_UUID
-            }
-            if (r.drmLicense.startsWith("http")) {
-                item.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(uuid).setLicenseUri(r.drmLicense).setLicenseRequestHeaders(r.headers).build())
-            } else clearKeyJson(r.drmLicense)?.let { json ->
-                val mgr = DefaultDrmSessionManager.Builder()
-                    .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
-                    .build(LocalMediaDrmCallback(json.toByteArray()))
-                msf.setDrmSessionManagerProvider { mgr }
-                item.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID).build())
-            }
+        ready = false
+        val k = kind ?: preferredEngine()
+        engine?.release()
+        engine = null
+        container.removeAllViews()
+        val e: Engine = try {
+            if (k == ENGINE_VLC) VlcEngine() else ExoEngine()
+        } catch (t: Throwable) {
+            Toast.makeText(this, "${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show()
+            if (k == ENGINE_VLC) ExoEngine() else VlcEngine()
         }
-
-        val minBuf = (settings.bufferSeconds.coerceIn(2, 120) * 1000).coerceAtLeast(2500)
-        val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(minBuf, maxOf(minBuf * 2, 50_000), 1500, minOf(3000, minBuf))
-            .build()
-        val renderers = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            .setEnableDecoderFallback(true)
-
-        val p = ExoPlayer.Builder(this, renderers).setMediaSourceFactory(msf).setLoadControl(load).build()
-        p.addListener(object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) {
-                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    p.seekToDefaultPosition(); p.prepare(); return
-                }
-                onError(error)
-            }
-
-            override fun onVideoSizeChanged(videoSize: VideoSize) {
-                qualityLabel = if (videoSize.height > 0) "${videoSize.width}×${videoSize.height} ${L.quality(videoSize.height)}" else ""
-                updateInfo()
-                if (Build.VERSION.SDK_INT >= 26 && inPip()) runCatching { setPictureInPictureParams(pipParams()) }
-            }
-
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) retries = 0
-            }
-        })
-        playerView.player = p
-        player = p
-        p.setMediaItem(item.build())
-        p.prepare()
-        p.playWhenReady = true
+        engineKind = if (e is VlcEngine) ENGINE_VLC else ENGINE_EXO
+        tried += engineKind
+        engine = e
+        container.addView(e.view, FrameLayout.LayoutParams(-1, -1))
+        engineButton?.text = if (engineKind == ENGINE_VLC) "ExoPlayer" else "VLC"
+        spinner.visibility = View.VISIBLE
+        qualityLabel = ""
+        try {
+            e.play(r)
+            e.setResize(resizeIdx)
+        } catch (t: Throwable) {
+            onEngineError("${e.name}: ${t.message ?: t.javaClass.simpleName}", containerIssue = false)
+            return
+        }
+        startJob?.cancel()
+        startJob = lifecycleScope.launch {
+            delay(START_TIMEOUT_MS)
+            if (!ready) onEngineError(L.t("لم تبدأ الصورة خلال 20 ثانية", "No picture after 20 seconds") + " (${e.name})", containerIssue = true)
+        }
         nowProgram = ""
         updateInfo()
         loadNowProgram()
         startKeepAlive()
     }
 
-    private fun mimeFor(url: String): String? {
-        val u = url.lowercase()
-        val path = u.substringBefore('?')
-        return when {
-            path.endsWith(".m3u8") || u.contains("extension=m3u8") || u.contains("output=m3u8") || u.contains("type=m3u8") -> MimeTypes.APPLICATION_M3U8
-            path.endsWith(".mpd") || u.contains("format=mpd") -> MimeTypes.APPLICATION_MPD
-            path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest") -> MimeTypes.APPLICATION_SS
-            else -> null
-        }
+    private fun onReady() {
+        if (ready) return
+        ready = true
+        startJob?.cancel()
+        spinner.visibility = View.GONE
+        updateInfo()
     }
 
-    /** "kid:key[,kid:key]" (hex) -> ClearKey JSON for local licensing. */
-    private fun clearKeyJson(spec: String): String? {
-        val pairs = spec.split(',').mapNotNull { p ->
-            val kid = p.substringBefore(':').trim(); val key = p.substringAfter(':', "").trim()
-            if (kid.length == 32 && key.length == 32) kid to key else null
-        }
-        if (pairs.isEmpty()) return null
-        fun b64(hex: String): String {
-            val bytes = ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-            return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-        }
-        val keys = pairs.joinToString(",") { (kid, key) -> "{\"kty\":\"oct\",\"k\":\"${b64(key)}\",\"kid\":\"${b64(kid)}\"}" }
-        return "{\"keys\":[$keys],\"type\":\"temporary\"}"
+    private fun onBuffering(buffering: Boolean) {
+        spinner.visibility = if (buffering) View.VISIBLE else View.GONE
     }
 
-    private fun onError(error: PlaybackException) {
+    private fun onVideoSize(w: Int, h: Int) {
+        qualityLabel = if (h > 0) "${w}×$h ${L.quality(h)}" else ""
+        updateInfo()
+        if (Build.VERSION.SDK_INT >= 26 && inPip()) runCatching { setPictureInPictureParams(pipParams()) }
+    }
+
+    /** Failure handling: HLS retry → other engine (auto mode) → fresh link for live → error dialog. */
+    private fun onEngineError(msg: String, containerIssue: Boolean) {
+        if (isFinishing || isDestroyed) return
+        startJob?.cancel()
+        val r = req ?: return
+        spinner.visibility = View.GONE
+        if (engineKind == ENGINE_EXO && containerIssue && !forceHls && !r.url.contains("m3u8", true) && r.url.startsWith("http")) {
+            forceHls = true
+            startPlayback(r, ENGINE_EXO)
+            return
+        }
+        if (ProfileStore.settings.value.playerEngine == "auto") {
+            val other = if (engineKind == ENGINE_EXO) ENGINE_VLC else ENGINE_EXO
+            if (other !in tried) {
+                Toast.makeText(this, L.t("جارٍ التشغيل بمشغل ", "Trying ") + (if (other == ENGINE_VLC) "VLC" else "ExoPlayer") + "…", Toast.LENGTH_SHORT).show()
+                startPlayback(r, other)
+                return
+            }
+        }
         val e = entry
         val provider = Session.provider
-        if (retries < 3 && e != null && provider != null && (req?.isLive == true || e.kind == ContentKind.LIVE)) {
+        if (isLive && retries < 2 && e != null && provider != null) {
             retries++
-            info.text = L.t("إعادة المحاولة…", "Retrying…") + " ($retries)"
+            info.text = L.t("إعادة طلب رابط جديد…", "Requesting a fresh link…") + " ($retries)"
             lifecycleScope.launch {
-                delay(1500)
-                val fresh = runCatching { provider.resolve(e) }.getOrNull() ?: req
-                fresh?.let { play(it) }
+                delay(1200)
+                val fresh = runCatching { provider.resolve(e) }.getOrNull() ?: r
+                startPlayback(fresh, engineKind)
             }
             return
         }
-        Toast.makeText(this, L.t("تعذر التشغيل: ", "Playback error: ") + error.errorCodeName, Toast.LENGTH_LONG).show()
-        playerView.showController()
+        showErrorDialog(msg, manual = false)
+    }
+
+    private fun showErrorDialog(msg: String, manual: Boolean) {
+        val r = req ?: return
+        errorDialog?.dismiss()
+        val base = buildString {
+            append(msg).append("\n\n")
+            append(L.t("المشغل: ", "Engine: ")).append(engine?.name ?: "-").append("\n")
+            append(L.t("الرابط: ", "Link: ")).append(r.url.take(160)).append("\n\n")
+        }
+        val other = if (engineKind == ENGINE_VLC) ENGINE_EXO else ENGINE_VLC
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(if (manual) L.t("فحص رابط القناة", "Stream link check") else L.t("تعذر تشغيل القناة", "Cannot play this stream"))
+            .setMessage(base + L.t("جارٍ فحص الرابط…", "Checking the link…"))
+            .setPositiveButton(L.t("جرّب ", "Try ") + (if (other == ENGINE_VLC) "VLC" else "ExoPlayer")) { _, _ ->
+                tried.clear(); retries = 0; startPlayback(r, other)
+            }
+            .setNeutralButton(L.t("مشغل خارجي", "External player")) { _, _ -> ExternalPlayer.open(this, r) }
+            .setNegativeButton(if (manual) L.t("إغلاق", "Close") else L.t("رجوع", "Back")) { _, _ -> if (!manual) finish() }
+            .show()
+        errorDialog = dlg
+        lifecycleScope.launch {
+            val probe = StreamProbe.probe(r)
+            if (dlg.isShowing) dlg.setMessage(base + probe)
+        }
+    }
+
+    private fun switchEngine() {
+        val r = req ?: return
+        tried.clear(); retries = 0; forceHls = false
+        startPlayback(r, if (engineKind == ENGINE_VLC) ENGINE_EXO else ENGINE_VLC)
+    }
+
+    private fun togglePlay() {
+        val e = engine ?: return
+        e.setPlaying(!e.isPlaying())
+        playButton?.text = if (e.isPlaying()) "❚❚" else "▶"
+    }
+
+    private fun fmt(ms: Long): String {
+        val s = ms / 1000
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%02d:%02d".format(s / 60, s % 60)
     }
 
     private fun updateInfo() {
         val e = entry
         val num = if (e != null && e.kind == ContentKind.LIVE && e.number > 0) "${e.number}. " else ""
+        val eng = engine
+        val pos = if (eng != null && !isLive && eng.duration() > 0) "${fmt(eng.position())} / ${fmt(eng.duration())}" else null
         val parts = listOfNotNull(
             num + (req?.title ?: e?.title ?: ""),
             nowProgram.takeIf { it.isNotBlank() },
             qualityLabel.takeIf { it.isNotBlank() },
+            pos,
+            eng?.name,
             if (recordingId != null) "● REC" else null,
         )
         info.text = parts.joinToString("   •   ")
@@ -342,13 +418,29 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun releasePlayer() {
-        keepAliveJob?.cancel()
-        player?.release()
-        player = null
+    // ------------------------------------------------------------------ overlay
+    private fun showOverlay() {
+        if (inPip()) return
+        overlay.visibility = View.VISIBLE
+        playButton?.text = if (engine?.isPlaying() == false) "▶" else "❚❚"
+        updateInfo()
+        firstButton.requestFocus()
+        scheduleHide()
+        tickJob?.cancel()
+        tickJob = lifecycleScope.launch { while (isActive) { delay(1000); updateInfo() } }
     }
 
-    // ------------------------------------------------------------------ zapping
+    private fun hideOverlay() {
+        overlay.visibility = View.GONE
+        hideJob?.cancel(); tickJob?.cancel()
+    }
+
+    private fun scheduleHide() {
+        hideJob?.cancel()
+        hideJob = lifecycleScope.launch { delay(7000); hideOverlay() }
+    }
+
+    // ------------------------------------------------------------------ zapping & keys
     private fun zap(delta: Int) {
         val list = Session.zapList
         val cur = entry ?: return
@@ -367,21 +459,29 @@ class PlayerActivity : ComponentActivity() {
                 Toast.makeText(this@PlayerActivity, L.t("تعذر فتح القناة", "Cannot open channel"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            entry = e; index = next; retries = 0
-            play(r)
+            entry = e; index = next
+            newSession()
+            startPlayback(r, null)
         }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && !inPip()) {
-            val live = entry?.kind == ContentKind.LIVE
-            val controllerShown = playerView.isControllerFullyVisible
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_CHANNEL_UP -> if (live) { zap(+1); return true }
-                KeyEvent.KEYCODE_CHANNEL_DOWN -> if (live) { zap(-1); return true }
-                KeyEvent.KEYCODE_DPAD_UP -> if (live && !controllerShown) { zap(+1); return true }
-                KeyEvent.KEYCODE_DPAD_DOWN -> if (live && !controllerShown) { zap(-1); return true }
-                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> { playerView.showController(); return true }
+            val key = event.keyCode
+            if (overlay.visibility == View.VISIBLE) {
+                scheduleHide()
+                if (key == KeyEvent.KEYCODE_BACK) { hideOverlay(); return true }
+                return super.dispatchKeyEvent(event)
+            }
+            val live = entry?.kind == ContentKind.LIVE && isLive
+            when (key) {
+                KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_DPAD_UP -> if (live) { zap(+1); return true }
+                KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> if (live) { zap(-1); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> if (!live) { engine?.seekBy(-10_000); showOverlay(); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (!live) { engine?.seekBy(10_000); showOverlay(); return true }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> { showOverlay(); return true }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> { togglePlay(); return true }
                 KeyEvent.KEYCODE_PROG_RED -> { recordDialog(); return true }
             }
         }
@@ -389,17 +489,9 @@ class PlayerActivity : ComponentActivity() {
     }
 
     // ------------------------------------------------------------------ actions
-    private fun trackDialog(type: Int, title: String) {
-        val p = player ?: return
-        TrackSelectionDialogBuilder(this, title, p, type)
-            .setAllowAdaptiveSelections(type == C.TRACK_TYPE_VIDEO)
-            .build()
-            .show()
-    }
-
     private fun cycleResize() {
-        resizeIdx = (resizeIdx + 1) % resizeModes.size
-        playerView.resizeMode = resizeModes[resizeIdx]
+        resizeIdx = (resizeIdx + 1) % 4
+        engine?.setResize(resizeIdx)
         ProfileStore.updateSettings { it.copy(resizeMode = resizeIdx) }
         Toast.makeText(this, resizeNames[resizeIdx], Toast.LENGTH_SHORT).show()
     }
@@ -445,8 +537,8 @@ class PlayerActivity : ComponentActivity() {
         packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
     private fun pipParams(): PictureInPictureParams {
-        val f = player?.videoFormat
-        var ratio = if (f != null && f.width > 0 && f.height > 0) f.width.toFloat() / f.height else 16f / 9f
+        val (w, h) = engine?.videoSize() ?: (0 to 0)
+        var ratio = if (w > 0 && h > 0) w.toFloat() / h else 16f / 9f
         ratio = ratio.coerceIn(0.42f, 2.38f)
         return PictureInPictureParams.Builder().setAspectRatio(Rational((ratio * 1000).toInt(), 1000)).build()
     }
@@ -456,50 +548,295 @@ class PlayerActivity : ComponentActivity() {
             Toast.makeText(this, L.t("الجهاز لا يدعم صورة في صورة", "Picture-in-picture not supported"), Toast.LENGTH_SHORT).show()
             return
         }
+        hideOverlay()
         runCatching { enterPictureInPictureMode(pipParams()) }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (ProfileStore.settings.value.autoPip && player?.isPlaying == true && pipSupported()) enterPip()
+        if (ProfileStore.settings.value.autoPip && engine?.isPlaying() == true && pipSupported()) enterPip()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        playerView.useController = !isInPictureInPictureMode
-        if (isInPictureInPictureMode) { topBar.visibility = View.GONE; zapInfo.visibility = View.GONE }
+        if (isInPictureInPictureMode) { hideOverlay(); zapInfo.visibility = View.GONE }
     }
 
     override fun onStart() {
         super.onStart()
-        player?.playWhenReady = true
+        if (ready) engine?.setPlaying(true)
     }
 
     override fun onStop() {
         super.onStop()
-        if (!inPip()) player?.playWhenReady = false
+        if (!inPip()) engine?.setPlaying(false)
     }
 
     override fun onDestroy() {
-        releasePlayer()
+        startJob?.cancel(); keepAliveJob?.cancel()
+        errorDialog?.dismiss()
+        engine?.release()
+        engine = null
         super.onDestroy()
+    }
+
+    // ================================================================ ExoPlayer
+    private inner class ExoEngine : Engine {
+        override val name = "ExoPlayer"
+        private val pv = PlayerView(this@PlayerActivity).apply {
+            useController = false
+            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+            keepScreenOn = true
+        }
+        private var p: ExoPlayer? = null
+        override val view: View get() = pv
+
+        private val modes = intArrayOf(
+            AspectRatioFrameLayout.RESIZE_MODE_FIT, AspectRatioFrameLayout.RESIZE_MODE_FILL,
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM, AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH,
+        )
+
+        override fun play(r: PlayRequest) {
+            val ua = r.userAgent.ifBlank { DeviceIdentity.DEFAULT_PLAYER_UA }
+            val http = OkHttpDataSource.Factory(Http.client).setUserAgent(ua).setDefaultRequestProperties(r.headers)
+            val dataSource = DefaultDataSource.Factory(this@PlayerActivity, http)
+            val extractors = DefaultExtractorsFactory().setTsExtractorFlags(
+                DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+            )
+            val msf = DefaultMediaSourceFactory(dataSource, extractors)
+            val item = MediaItem.Builder().setUri(Uri.parse(r.url))
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(r.title).build())
+            (if (forceHls) MimeTypes.APPLICATION_M3U8 else mimeFor(r.url))?.let { item.setMimeType(it) }
+            if (r.drmLicense.isNotBlank()) {
+                val scheme = r.drmScheme.lowercase()
+                val uuid = when {
+                    scheme.contains("clearkey") -> C.CLEARKEY_UUID
+                    scheme.contains("playready") -> C.PLAYREADY_UUID
+                    else -> C.WIDEVINE_UUID
+                }
+                if (r.drmLicense.startsWith("http")) {
+                    item.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(uuid).setLicenseUri(r.drmLicense).setLicenseRequestHeaders(r.headers).build())
+                } else clearKeyJson(r.drmLicense)?.let { json ->
+                    val mgr = DefaultDrmSessionManager.Builder()
+                        .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                        .build(LocalMediaDrmCallback(json.toByteArray()))
+                    msf.setDrmSessionManagerProvider { mgr }
+                    item.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID).build())
+                }
+            }
+            val minBuf = bufferMs
+            val load = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(minBuf, maxOf(minBuf * 2, 50_000), 1500, minOf(3000, minBuf))
+                .build()
+            val renderers = DefaultRenderersFactory(this@PlayerActivity)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                .setEnableDecoderFallback(true)
+            val player = ExoPlayer.Builder(this@PlayerActivity, renderers).setMediaSourceFactory(msf).setLoadControl(load).build()
+            player.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(state: Int) {
+                    when (state) {
+                        Player.STATE_READY -> { onBuffering(false); onReady() }
+                        Player.STATE_BUFFERING -> onBuffering(true)
+                        Player.STATE_ENDED -> if (isLive) onEngineError(L.t("انتهى البث من الخادم", "Stream ended by the server"), false)
+                        else -> Unit
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                        player.seekToDefaultPosition(); player.prepare(); return
+                    }
+                    val containerIssue = error.errorCode in setOf(
+                        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                        PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                        PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+                    )
+                    onEngineError("ExoPlayer: ${error.errorCodeName}\n${error.cause?.message ?: error.message ?: ""}", containerIssue)
+                }
+
+                override fun onTracksChanged(tracks: Tracks) {
+                    // Audio or video present but no decoder for it (e.g. AC3 on some devices) -> let VLC try.
+                    val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    val video = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+                    if ((audio.isNotEmpty() && audio.none { it.isSupported }) || (video.isNotEmpty() && video.none { it.isSupported })) {
+                        onEngineError(L.t("صيغة الصوت/الصورة غير مدعومة في ExoPlayer", "Audio/video codec not supported by ExoPlayer"), false)
+                    }
+                }
+
+                override fun onVideoSizeChanged(videoSize: VideoSize) = onVideoSize(videoSize.width, videoSize.height)
+            })
+            pv.player = player
+            p = player
+            player.setMediaItem(item.build())
+            player.prepare()
+            player.playWhenReady = true
+        }
+
+        override fun release() { pv.player = null; p?.release(); p = null }
+        override fun setPlaying(play: Boolean) { p?.playWhenReady = play }
+        override fun isPlaying() = p?.playWhenReady == true
+        override fun seekBy(ms: Long) { p?.let { it.seekTo((it.currentPosition + ms).coerceAtLeast(0)) } }
+        override fun position() = p?.currentPosition ?: 0L
+        override fun duration() = p?.duration?.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
+        override fun setResize(idx: Int) { pv.resizeMode = modes[idx.coerceIn(0, modes.size - 1)] }
+        override fun videoSize(): Pair<Int, Int> = p?.videoSize?.let { it.width to it.height } ?: (0 to 0)
+
+        override fun tracks(kind: Int) {
+            val player = p ?: return
+            val type = when (kind) { 0 -> C.TRACK_TYPE_VIDEO; 1 -> C.TRACK_TYPE_AUDIO; else -> C.TRACK_TYPE_TEXT }
+            val title = when (kind) { 0 -> L.t("الجودة / الدقة", "Video quality"); 1 -> L.t("مسار الصوت", "Audio track"); else -> L.t("الترجمة", "Subtitles") }
+            TrackSelectionDialogBuilder(this@PlayerActivity, title, player, type)
+                .setAllowAdaptiveSelections(type == C.TRACK_TYPE_VIDEO)
+                .build()
+                .show()
+        }
+    }
+
+    // ===================================================================== VLC
+    private inner class VlcEngine : Engine {
+        override val name = "VLC"
+        private val layout = VLCVideoLayout(this@PlayerActivity)
+        private val libVlc = LibVLC(this@PlayerActivity, arrayListOf(
+            "--http-reconnect",
+            "--network-caching=$bufferMs",
+            "--live-caching=$bufferMs",
+            "--avcodec-skiploopfilter=1",
+            "--audio-time-stretch",
+            "--no-stats",
+        ))
+        private val mp = MediaPlayer(libVlc)
+        private var attached = false
+        override val view: View get() = layout
+
+        private val scales = arrayOf(
+            MediaPlayer.ScaleType.SURFACE_BEST_FIT, MediaPlayer.ScaleType.SURFACE_FILL,
+            MediaPlayer.ScaleType.SURFACE_FIT_SCREEN, MediaPlayer.ScaleType.SURFACE_16_9,
+        )
+
+        override fun play(r: PlayRequest) {
+            if (!attached) { mp.attachViews(layout, null, true, false); attached = true }
+            mp.setEventListener(MediaPlayer.EventListener { ev ->
+                runOnUiThread {
+                    when (ev.type) {
+                        MediaPlayer.Event.Playing -> { onBuffering(false); onReady() }
+                        MediaPlayer.Event.Buffering -> onBuffering(ev.buffering < 100f && !ready)
+                        MediaPlayer.Event.Vout -> runCatching { val (w, h) = videoSize(); if (w > 0) onVideoSize(w, h) }
+                        MediaPlayer.Event.EncounteredError -> onEngineError(L.t("VLC لم يستطع فتح البث", "VLC could not open the stream"), false)
+                        MediaPlayer.Event.EndReached -> if (isLive) onEngineError(L.t("انتهى البث من الخادم", "Stream ended by the server"), false)
+                        else -> Unit
+                    }
+                }
+            })
+            val media = Media(libVlc, Uri.parse(r.url))
+            media.setHWDecoderEnabled(true, false)
+            media.addOption(":network-caching=$bufferMs")
+            media.addOption(":http-user-agent=" + r.userAgent.ifBlank { DeviceIdentity.DEFAULT_PLAYER_UA })
+            r.headers["Referer"]?.let { media.addOption(":http-referrer=$it") }
+            mp.setMedia(media)
+            media.release()
+            mp.play()
+        }
+
+        override fun release() {
+            runCatching { mp.setEventListener(null) }
+            runCatching { mp.stop() }
+            runCatching { if (attached) mp.detachViews() }
+            runCatching { mp.release() }
+            runCatching { libVlc.release() }
+        }
+
+        override fun setPlaying(play: Boolean) { if (play) mp.play() else mp.pause() }
+        override fun isPlaying() = mp.isPlaying
+        override fun seekBy(ms: Long) { if (mp.isSeekable) mp.setTime((mp.time + ms).coerceAtLeast(0)) }
+        override fun position() = mp.time.coerceAtLeast(0)
+        override fun duration() = mp.length.coerceAtLeast(0)
+        override fun setResize(idx: Int) { mp.setVideoScale(scales[idx.coerceIn(0, scales.size - 1)]) }
+
+        override fun videoSize(): Pair<Int, Int> {
+            val t = runCatching { mp.currentVideoTrack }.getOrNull() ?: return 0 to 0
+            return t.width to t.height
+        }
+
+        override fun tracks(kind: Int) {
+            if (kind == 0) {
+                val (w, h) = videoSize()
+                Toast.makeText(this@PlayerActivity,
+                    (if (h > 0) "${w}×$h ${L.quality(h)}\n" else "") +
+                        L.t("اختيار الجودة يدويًا متاح في ExoPlayer", "Manual quality selection is available in ExoPlayer"),
+                    Toast.LENGTH_LONG).show()
+                return
+            }
+            val list = (if (kind == 1) mp.audioTracks else mp.spuTracks)?.toList().orEmpty()
+            if (list.isEmpty()) {
+                Toast.makeText(this@PlayerActivity, L.t("لا توجد مسارات", "No tracks"), Toast.LENGTH_SHORT).show(); return
+            }
+            AlertDialog.Builder(this@PlayerActivity)
+                .setTitle(if (kind == 1) L.t("مسار الصوت", "Audio track") else L.t("الترجمة", "Subtitles"))
+                .setItems(list.map { it.name ?: "#${it.id}" }.toTypedArray()) { _, i ->
+                    if (kind == 1) mp.setAudioTrack(list[i].id) else mp.setSpuTrack(list[i].id)
+                }
+                .show()
+        }
+    }
+
+    // ------------------------------------------------------------------ helpers
+    private fun mimeFor(url: String): String? {
+        val u = url.lowercase()
+        val path = u.substringBefore('?')
+        return when {
+            path.endsWith(".m3u8") || u.contains("extension=m3u8") || u.contains("output=m3u8") || u.contains("type=m3u8") -> MimeTypes.APPLICATION_M3U8
+            path.endsWith(".mpd") || u.contains("format=mpd") -> MimeTypes.APPLICATION_MPD
+            path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest") -> MimeTypes.APPLICATION_SS
+            else -> null
+        }
+    }
+
+    /** "kid:key[,kid:key]" (hex) -> ClearKey JSON for local licensing. */
+    private fun clearKeyJson(spec: String): String? {
+        val pairs = spec.split(',').mapNotNull { p ->
+            val kid = p.substringBefore(':').trim(); val key = p.substringAfter(':', "").trim()
+            if (kid.length == 32 && key.length == 32) kid to key else null
+        }
+        if (pairs.isEmpty()) return null
+        fun b64(hex: String): String {
+            val bytes = ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+            return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        }
+        val keys = pairs.joinToString(",") { (kid, key) -> "{\"kty\":\"oct\",\"k\":\"${b64(key)}\",\"kid\":\"${b64(kid)}\"}" }
+        return "{\"keys\":[$keys],\"type\":\"temporary\"}"
     }
 }
 
-/** Opens a stream in VLC / MX Player / any installed video player. */
+/** Opens a stream in VLC / MX Player / Just Player or any installed video player. */
 object ExternalPlayer {
+    val KNOWN = listOf(
+        "" to "Ask / اسأل كل مرة",
+        "org.videolan.vlc" to "VLC",
+        "com.mxtech.videoplayer.ad" to "MX Player",
+        "com.mxtech.videoplayer.pro" to "MX Player Pro",
+        "com.brouken.player" to "Just Player",
+        "is.xyz.mpv" to "mpv",
+    )
+
     fun open(ctx: Context, req: PlayRequest) {
         val ua = req.userAgent.ifBlank { DeviceIdentity.DEFAULT_PLAYER_UA }
         val headers = ArrayList<String>().apply {
             add("User-Agent"); add(ua)
             req.headers.forEach { (k, v) -> add(k); add(v) }
         }
-        val i = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(req.url), "video/*")
+        val base = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(req.url), "video/*")
             .putExtra("title", req.title)
             .putExtra("headers", headers.toTypedArray())
             .putExtra("http-user-agent", ua)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pkg = ProfileStore.settings.value.externalPackage
+        if (pkg.isNotBlank()) {
+            try { ctx.startActivity(Intent(base).setPackage(pkg)); return } catch (_: ActivityNotFoundException) {
+                Toast.makeText(ctx, L.t("المشغل المختار غير مثبت", "Selected player is not installed"), Toast.LENGTH_SHORT).show()
+            }
+        }
         try {
-            ctx.startActivity(Intent.createChooser(i, req.title.ifBlank { "NEW LIFE TV" }).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(Intent.createChooser(base, req.title.ifBlank { "NEW LIFE TV" }).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(ctx, L.t("لا يوجد مشغل خارجي مثبت", "No external player installed"), Toast.LENGTH_LONG).show()
         }
