@@ -177,7 +177,7 @@ class PlayerActivity : ComponentActivity() {
         // transparent layer that toggles the controls on tap (touch screens)
         val touch = View(this).apply {
             isFocusable = false
-            setOnClickListener { if (overlay.visibility == View.VISIBLE) hideOverlay() else showOverlay() }
+            setOnClickListener { if (this@PlayerActivity.overlay.visibility == View.VISIBLE) hideOverlay() else showOverlay() }
         }
         root.addView(touch, FrameLayout.LayoutParams(-1, -1))
 
