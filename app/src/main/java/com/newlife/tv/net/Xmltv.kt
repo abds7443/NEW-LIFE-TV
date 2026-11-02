@@ -28,6 +28,7 @@ object Xmltv {
     private val failed = ConcurrentHashMap<String, Long>()
     private val mutex = Mutex()
     private const val TTL = 6 * 3600_000L
+    private const val MAX_PROGRAMMES = 250_000
 
     fun clear() { cache.clear(); failed.clear() }
 
@@ -53,7 +54,8 @@ object Xmltv {
                     val body = r.body ?: throw IOException("empty")
                     parse(body.byteStream()).also { cache[url] = it }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // includes OutOfMemoryError on huge guides: never crash the app because of the EPG
                 failed[url] = System.currentTimeMillis(); null
             }
         }
@@ -67,8 +69,8 @@ object Xmltv {
         val input: InputStream = if (b1 == 0x1f && b2 == 0x8b) GZIPInputStream(bis, 64 * 1024) else bis
 
         val now = System.currentTimeMillis()
-        val from = now - 8 * 24 * 3600_000L
-        val to = now + 3 * 24 * 3600_000L
+        val from = now - 3 * 24 * 3600_000L
+        val to = now + 2 * 24 * 3600_000L
         val byId = HashMap<String, MutableList<EpgProgram>>()
         val names = HashMap<String, String>()
 
@@ -78,6 +80,7 @@ object Xmltv {
         var channelId = ""
         var progChannel = ""; var start = 0L; var stop = 0L
         var title = ""; var desc = ""
+        var kept = 0
         var event = p.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
@@ -100,7 +103,8 @@ object Xmltv {
                 when (p.name) {
                     "channel" -> channelId = ""
                     "programme" -> {
-                        if (progChannel.isNotEmpty() && stop > from && start < to && stop > start) {
+                        if (progChannel.isNotEmpty() && stop > from && start < to && stop > start && kept < MAX_PROGRAMMES) {
+                            kept++
                             byId.getOrPut(progChannel) { ArrayList() }.add(EpgProgram("", title, desc, start, stop))
                         }
                         progChannel = ""

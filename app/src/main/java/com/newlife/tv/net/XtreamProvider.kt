@@ -166,8 +166,9 @@ class XtreamProvider(override val profile: Profile) : IptvProvider {
         }.getOrNull().orEmpty().filter { it.end > it.start }
         if (list.isNotEmpty()) list
         else {
-            val url = profile.epgUrl.ifBlank { "$base/xmltv.php?username=$user&password=$pass" }
-            runCatching { Xmltv.programs(url, playerUa, entry.epgId, entry.title) }.getOrDefault(emptyList())
+            // Only use an XMLTV file if the user set one: the full server guide (xmltv.php) can be hundreds of MB.
+            if (profile.epgUrl.isBlank()) emptyList()
+            else runCatching { Xmltv.programs(profile.epgUrl, playerUa, entry.epgId, entry.title) }.getOrDefault(emptyList())
         }
     }
 

@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +60,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -119,22 +123,33 @@ private fun sectionLabel(s: Section): String = when (s) {
 
 // ============================================================================ home shell
 
+/** true on wide screens (tablet / big TV): side columns; false on phones and small TVs: compact pickers. */
+private val LocalWide = compositionLocalOf { true }
+private val LocalRailCompact = compositionLocalOf { false }
+
 @Composable
 fun HomeScreen(vm: MainViewModel) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(20_000); now = System.currentTimeMillis() } }
 
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val railCompact = maxWidth < 700.dp
+    val railWidth = if (railCompact) 68.dp else 210.dp
+    val wide = maxWidth - railWidth >= 1000.dp
+    CompositionLocalProvider(LocalWide provides wide, LocalRailCompact provides railCompact) {
     Row(Modifier.fillMaxSize()) {
         // ---------------- navigation rail ----------------
         Column(
-            Modifier.width(220.dp).fillMaxHeight().background(Palette.Surface).verticalScroll(rememberScrollState()).padding(10.dp)
+            Modifier.width(railWidth).fillMaxHeight().background(Palette.Surface).verticalScroll(rememberScrollState()).padding(if (railCompact) 4.dp else 10.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
-                Text("NEW LIFE ", fontWeight = FontWeight.Black, fontSize = 18.sp)
-                Text("TV", fontWeight = FontWeight.Black, fontSize = 18.sp, color = Palette.Gold)
-            }
-            Text(vm.activeProfile?.displayName() ?: "", color = Palette.Text2, fontSize = 12.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 6.dp))
+            if (!railCompact) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
+                    Text("NEW LIFE ", fontWeight = FontWeight.Black, fontSize = 18.sp)
+                    Text("TV", fontWeight = FontWeight.Black, fontSize = 18.sp, color = Palette.Gold)
+                }
+                Text(vm.activeProfile?.displayName() ?: "", color = Palette.Text2, fontSize = 12.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 6.dp))
+            } else Text("NL", fontWeight = FontWeight.Black, fontSize = 18.sp, color = Palette.Gold, modifier = Modifier.padding(10.dp))
             Spacer(Modifier.height(10.dp))
             Section.entries.forEach { s ->
                 RailItem(sectionIcon(s), sectionLabel(s), vm.section == s) { vm.selectSection(s) }
@@ -170,6 +185,8 @@ fun HomeScreen(vm: MainViewModel) {
             }
         }
     }
+    }
+    }
 
     vm.vodDialog?.let { VodDialog(vm, it) }
 }
@@ -180,9 +197,11 @@ private fun RailItem(icon: ImageVector, label: String, selected: Boolean, onClic
         Modifier.fillMaxWidth().padding(vertical = 2.dp).tvClick(selected = selected, onClick = onClick).padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = if (selected) Palette.Accent else Palette.Text2, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(label, color = if (selected) Palette.Accent else Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Icon(icon, label, tint = if (selected) Palette.Accent else Palette.Text2, modifier = Modifier.size(22.dp))
+        if (!LocalRailCompact.current) {
+            Spacer(Modifier.width(10.dp))
+            Text(label, color = if (selected) Palette.Accent else Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -204,6 +223,61 @@ private fun CategoryColumn(vm: MainViewModel, kind: ContentKind) {
     }
 }
 
+/** Compact screens: one button showing the current group; it opens a searchable list of all groups. */
+@Composable
+private fun CategoryPicker(vm: MainViewModel, kind: ContentKind) {
+    val cats = vm.categories[kind].orEmpty()
+    val sel = vm.selectedCat[kind]
+    var open by remember { mutableStateOf(false) }
+    val current = cats.firstOrNull { it.id == sel }?.title ?: L.t("اختر مجموعة", "Choose a group")
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        NButton("📂  $current  ▾", modifier = Modifier.weight(1f, fill = false)) { open = true }
+        Spacer(Modifier.width(8.dp))
+        Text("${cats.size} " + L.t("مجموعة", "groups"), color = Palette.Text2, fontSize = 12.sp)
+    }
+    if (open) {
+        var q by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(L.t("المجموعات", "Groups")) },
+            text = {
+                Column {
+                    Field(L.t("بحث عن مجموعة", "Search groups"), q, Modifier.fillMaxWidth()) { q = it }
+                    val shown = if (q.isBlank()) cats else cats.filter { it.title.contains(q.trim(), ignoreCase = true) }
+                    LazyColumn(Modifier.heightIn(max = 380.dp).padding(top = 6.dp)) {
+                        items(shown) { c ->
+                            Text(
+                                c.title,
+                                Modifier.fillMaxWidth().tvClick(selected = c.id == sel) { vm.selectCategory(kind, c.id); open = false }.padding(10.dp),
+                                color = if (c.id == sel) Palette.Accent else Color.White,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { open = false }) { Text(L.t("إغلاق", "Close")) } },
+        )
+    }
+}
+
+/** Groups as a side column on wide screens, or as a picker button on top on phones / small TVs. */
+@Composable
+private fun WithCategories(vm: MainViewModel, kind: ContentKind, content: @Composable () -> Unit) {
+    if (LocalWide.current) {
+        Row(Modifier.fillMaxSize()) {
+            CategoryColumn(vm, kind)
+            Box(Modifier.weight(1f).fillMaxHeight()) { content() }
+        }
+    } else {
+        Column(Modifier.fillMaxSize()) {
+            CategoryPicker(vm, kind)
+            Box(Modifier.weight(1f).fillMaxWidth()) { content() }
+        }
+    }
+}
+
 @Composable
 private fun EmptyHint(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(text, color = Palette.Text2) }
@@ -214,34 +288,39 @@ private fun EmptyHint(text: String) {
 @Composable
 private fun LiveSection(vm: MainViewModel) {
     val ctx = LocalContext.current
+    val wide = LocalWide.current
     val list = if (vm.entriesKind == ContentKind.LIVE) vm.entries else emptyList()
-    Row(Modifier.fillMaxSize()) {
-        CategoryColumn(vm, ContentKind.LIVE)
-        Box(Modifier.weight(1f).fillMaxHeight()) {
-            if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا توجد قنوات", "No channels"))
-            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-                itemsIndexed(list) { i, e ->
-                    val nowProg = vm.epg[e.id]?.firstOrNull { it.isNow }
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                            .tvClick(onLongClick = { vm.toggleFav(e) }, onFocus = { vm.focus(e) }) { vm.play(ctx, e, list) }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(if (e.number > 0) "${e.number}" else "${i + 1}", color = Palette.Text2, fontSize = 13.sp, modifier = Modifier.width(44.dp))
-                        Logo(e.logo, 44.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                            if (nowProg != null) Text(nowProg.title, color = Palette.Text2, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    WithCategories(vm, ContentKind.LIVE) {
+        Row(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا توجد قنوات في هذه المجموعة", "No channels in this group"))
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+                    itemsIndexed(list) { i, e ->
+                        // touch screens never "focus" a row, so load the now-playing info for visible rows
+                        if (!wide) LaunchedEffect(e.id) { vm.loadEpg(e) }
+                        val nowProg = vm.epg[e.id]?.firstOrNull { it.isNow }
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                                .tvClick(onLongClick = { vm.toggleFav(e) }, onFocus = { vm.focus(e) }) { vm.play(ctx, e, list) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(if (e.number > 0) "${e.number}" else "${i + 1}", color = Palette.Text2, fontSize = 13.sp, modifier = Modifier.width(44.dp))
+                            Logo(e.logo, 44.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                                if (nowProg != null) Text(nowProg.title, color = Palette.Text2, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (e.catchupDays > 0) Icon(Icons.Filled.History, null, tint = Palette.Text2, modifier = Modifier.size(16.dp))
+                            if (vm.isFav(e)) Icon(Icons.Filled.Favorite, null, tint = Palette.Gold, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Filled.PlayArrow, null, tint = Palette.Text2, modifier = Modifier.size(20.dp))
                         }
-                        if (e.catchupDays > 0) Icon(Icons.Filled.History, null, tint = Palette.Text2, modifier = Modifier.size(16.dp))
-                        if (vm.isFav(e)) Icon(Icons.Filled.Favorite, null, tint = Palette.Gold, modifier = Modifier.size(16.dp))
                     }
                 }
             }
+            if (wide) ChannelPanel(vm, list)
         }
-        ChannelPanel(vm, list)
     }
 }
 
@@ -323,12 +402,9 @@ private fun RecordNowButton(vm: MainViewModel, e: MediaEntry) {
 @Composable
 private fun PosterSection(vm: MainViewModel, kind: ContentKind) {
     val list = if (vm.entriesKind == kind) vm.entries else emptyList()
-    Row(Modifier.fillMaxSize()) {
-        CategoryColumn(vm, kind)
-        Box(Modifier.weight(1f).fillMaxHeight()) {
-            if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا يوجد محتوى", "Nothing here"))
-            PosterGrid(vm, list)
-        }
+    WithCategories(vm, kind) {
+        if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا يوجد محتوى", "Nothing here"))
+        PosterGrid(vm, list)
     }
 }
 
@@ -445,9 +521,10 @@ fun SeriesScreen(vm: MainViewModel, e: MediaEntry) {
 private fun GuideSection(vm: MainViewModel) {
     val ctx = LocalContext.current
     val list = if (vm.entriesKind == ContentKind.LIVE) vm.entries else emptyList()
+    val wide = LocalWide.current
+    WithCategories(vm, ContentKind.LIVE) {
     Row(Modifier.fillMaxSize()) {
-        CategoryColumn(vm, ContentKind.LIVE)
-        LazyColumn(Modifier.width(290.dp).fillMaxHeight().padding(horizontal = 6.dp)) {
+        LazyColumn(Modifier.width(if (wide) 290.dp else 230.dp).fillMaxHeight().padding(horizontal = 6.dp)) {
             items(list) { e ->
                 val nowProg = vm.epg[e.id]?.firstOrNull { it.isNow }
                 LaunchedEffect(e.id) { vm.loadEpg(e) }
@@ -471,6 +548,7 @@ private fun GuideSection(vm: MainViewModel) {
             if (ch == null) EmptyHint(L.t("اختر قناة لعرض جدول برامجها", "Pick a channel to see its schedule"))
             else GuidePrograms(vm, ch, list)
         }
+    }
     }
 }
 

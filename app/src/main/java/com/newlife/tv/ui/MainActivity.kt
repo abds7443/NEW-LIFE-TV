@@ -14,6 +14,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -48,6 +55,7 @@ fun AppRoot(vm: MainViewModel) {
         Surface(Modifier.fillMaxSize(), color = Palette.Bg) {
             BackHandler(enabled = vm.stack.size > 1) { vm.back() }
             if (vm.updateDialog) UpdateDialog(vm)
+            CrashReportDialog()
             when (val s = vm.screen) {
                 Screen.Profiles -> ProfilesScreen(vm)
                 is Screen.Edit -> ProfileEditor(vm, s.profile)
@@ -57,4 +65,36 @@ fun AppRoot(vm: MainViewModel) {
             }
         }
     }
+}
+
+/** Shows the reason of the last crash (saved by NewLifeApp) with a button to copy it. */
+@Composable
+private fun CrashReportDialog() {
+    val ctx = LocalContext.current
+    val file = remember { java.io.File(ctx.filesDir, com.newlife.tv.NewLifeApp.CRASH_FILE) }
+    var text by remember { mutableStateOf(if (file.exists()) runCatching { file.readText() }.getOrDefault("") else "") }
+    if (text.isBlank()) return
+    fun close() { file.delete(); text = "" }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { close() },
+        title = { androidx.compose.material3.Text(L.t("أُغلق البرنامج بشكل مفاجئ في المرة السابقة", "The app closed unexpectedly last time")) },
+        text = {
+            androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) {
+                androidx.compose.material3.Text(
+                    L.t("انسخ التقرير وأرسله للمطوّر لإصلاح المشكلة:", "Copy this report and send it to the developer:"),
+                    color = Palette.Text2,
+                )
+                androidx.compose.material3.Text(text.take(1500), fontSize = 11.sp)
+            }
+        },
+        confirmButton = {
+            NButton(L.t("نسخ التقرير", "Copy report"), primary = true) {
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("NEW LIFE TV crash", text))
+                Toast.makeText(ctx, L.t("تم النسخ", "Copied"), Toast.LENGTH_SHORT).show()
+                close()
+            }
+        },
+        dismissButton = { NButton(L.t("إغلاق", "Close")) { close() } },
+    )
 }
