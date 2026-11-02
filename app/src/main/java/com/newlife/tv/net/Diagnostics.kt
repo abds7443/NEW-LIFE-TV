@@ -154,8 +154,8 @@ object StreamProbe {
                 }
                 val hint = when (resp.code) {
                     in 200..299 -> L.t("الرابط يعمل ويرسل بيانات.", "The link works and sends data.")
-                    401, 403 -> L.t("الخادم رفض الطلب: الاشتراك منتهٍ أو الجهاز/MAC غير مصرح أو الـUser-Agent مرفوض.",
-                        "Server refused: subscription expired, device/MAC not allowed or User-Agent blocked.")
+                    460, 461, 462, 401, 403, 405, 406 -> L.t("الخادم رفض الطلب: غالباً الـUser-Agent غير مقبول (جرّب خيارات أخرى ← User-Agent) أو الاشتراك منتهٍ أو تجاوز عدد الاتصالات.",
+                        "Server refused: usually the User-Agent is not accepted (try More options → User-Agent), or the subscription expired / connection limit reached.")
                     404 -> L.t("القناة غير موجودة على الخادم حالياً.", "Channel not found on the server.")
                     458, 509, 429 -> L.t("تم تجاوز عدد الاتصالات المسموح به في الاشتراك.", "Connection limit of the subscription reached.")
                     in 500..599 -> L.t("مشكلة في الخادم نفسه، حاول لاحقاً.", "Server-side problem, try later.")
@@ -167,5 +167,20 @@ object StreamProbe {
         } catch (e: Exception) {
             L.t("فشل الاتصال بخادم البث: ", "Could not reach the stream server: ") + (e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    /** Tries well-known player User-Agents and returns the first one the server accepts. */
+    suspend fun findWorkingUa(r: PlayRequest): String? = withContext(Dispatchers.IO) {
+        if (!r.url.startsWith("http")) return@withContext null
+        for (ua in DeviceIdentity.playerUaCandidates()) {
+            if (ua == r.userAgent) continue
+            val ok = runCatching {
+                client.newCall(Http.request(r.url, r.headers + ("User-Agent" to ua))).execute().use { resp ->
+                    resp.isSuccessful && (resp.body?.byteStream()?.read() ?: -1) >= 0
+                }
+            }.getOrDefault(false)
+            if (ok) return@withContext ua
+        }
+        null
     }
 }

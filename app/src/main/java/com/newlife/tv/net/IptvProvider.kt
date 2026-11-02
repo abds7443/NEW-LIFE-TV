@@ -28,7 +28,7 @@ interface IptvProvider {
     suspend fun keepAlive() {}
 
     val playerUa: String
-        get() = profile.playerUserAgent.ifBlank {
+        get() = Session.uaOverride ?: profile.playerUserAgent.ifBlank {
             if (profile.type == ProfileType.STALKER) profile.userAgent.ifBlank { DeviceIdentity.DEFAULT_STB_UA }
             else DeviceIdentity.DEFAULT_PLAYER_UA
         }
@@ -49,4 +49,6 @@ object ProviderFactory {
 object Session {
     @Volatile var provider: IptvProvider? = null
     @Volatile var zapList: List<MediaEntry> = emptyList()
+    /** A User-Agent found to work for the current subscription during this session. */
+    @Volatile var uaOverride: String? = null
 }

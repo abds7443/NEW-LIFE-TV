@@ -12,18 +12,32 @@ android {
         applicationId = "com.newlife.tv"
         minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        // Each GitHub build gets a higher number, so the app can update itself.
+        val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = build
+        versionName = "1.0.$build"
         vectorDrawables.useSupportLibrary = true
         // TV boxes, phones and tablets are ARM; this keeps the APK size reasonable with the VLC engine.
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
+    // Fixed signing key: every build has the same signature, so new versions install over the old one.
+    signingConfigs {
+        create("newlife") {
+            storeFile = file("newlife.jks")
+            storePassword = "newlife2026"
+            keyAlias = "newlife"
+            keyPassword = "newlife2026"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the debug key so the APK installs directly. Replace with your own keystore for store publishing.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("newlife")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("newlife")
         }
     }
     compileOptions {

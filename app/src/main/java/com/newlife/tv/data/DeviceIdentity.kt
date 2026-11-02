@@ -7,7 +7,23 @@ import kotlin.random.Random
 object DeviceIdentity {
     const val DEFAULT_STB_UA =
         "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3"
-    const val DEFAULT_PLAYER_UA = "NewLifeTV/1.0 (Linux; Android) ExoPlayer"
+    /** The phone's own Android player User-Agent (what MX Player and most players send). */
+    val ANDROID_UA: String
+        get() = System.getProperty("http.agent")?.takeIf { it.isNotBlank() }
+            ?: "Dalvik/2.1.0 (Linux; U; Android ${android.os.Build.VERSION.RELEASE}; ${android.os.Build.MODEL} Build/${android.os.Build.ID})"
+
+    val DEFAULT_PLAYER_UA: String get() = ANDROID_UA
+
+    /** User-Agents tried one after another when a server refuses a stream. */
+    fun playerUaCandidates(): List<String> = listOf(
+        ANDROID_UA,
+        "VLC/3.0.20 LibVLC/3.0.20",
+        "Lavf/60.16.100",
+        "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+        "IPTVSmartersPlayer",
+        "okhttp/4.12.0",
+        DEFAULT_STB_UA,
+    ).distinct()
 
     val STB_MODELS = listOf(
         "MAG200", "MAG245", "MAG250", "MAG254", "MAG256", "MAG270", "MAG275",

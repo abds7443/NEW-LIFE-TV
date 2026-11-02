@@ -47,6 +47,7 @@ fun AppRoot(vm: MainViewModel) {
     CompositionLocalProvider(LocalLayoutDirection provides dir) {
         Surface(Modifier.fillMaxSize(), color = Palette.Bg) {
             BackHandler(enabled = vm.stack.size > 1) { vm.back() }
+            if (vm.updateDialog) UpdateDialog(vm)
             when (val s = vm.screen) {
                 Screen.Profiles -> ProfilesScreen(vm)
                 is Screen.Edit -> ProfileEditor(vm, s.profile)

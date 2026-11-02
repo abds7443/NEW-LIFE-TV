@@ -25,6 +25,7 @@ import com.newlife.tv.net.IptvProvider
 import com.newlife.tv.net.ProviderFactory
 import com.newlife.tv.net.Session
 import com.newlife.tv.net.SpeedTest
+import com.newlife.tv.net.AppUpdater
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.newlife.tv.net.Xmltv
 import com.newlife.tv.player.ExternalPlayer
@@ -102,6 +103,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connectingName = profile.displayName()
         connectJob = viewModelScope.launch {
             try {
+                Session.uaOverride = null
                 val p = ProviderFactory.create(ctx, profile)
                 val info = p.connect()
                 Session.provider = p
@@ -422,6 +424,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 speedError = L.t("فشل اختبار السيرفر: ", "Server test failed: ") + e.message
             } finally {
                 if (speedRunning == "srv") speedRunning = null
+            }
+        }
+    }
+
+    // ================================================================ app update
+    var update by mutableStateOf<AppUpdater.Release?>(null); private set
+    var updateDialog by mutableStateOf(false)
+    var updateChecking by mutableStateOf(false); private set
+    var updateProgress by mutableStateOf<Float?>(null); private set
+    private var updateFile: java.io.File? = null
+
+    init { checkUpdate(silent = true) }
+
+    fun checkUpdate(silent: Boolean) {
+        if (updateChecking) return
+        updateChecking = true
+        viewModelScope.launch {
+            try {
+                val r = AppUpdater.latest()
+                val current = AppUpdater.currentVersionCode(ctx)
+                if (r != null && r.versionCode > current) {
+                    update = r; updateDialog = true
+                } else if (!silent) {
+                    toast = L.t("لديك أحدث نسخة", "You have the latest version") + " (${AppUpdater.currentVersionName(ctx)})"
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!silent) toast = L.t("تعذر التحقق من التحديثات: ", "Update check failed: ") + e.message
+            } finally {
+                updateChecking = false
+            }
+        }
+    }
+
+    fun downloadAndInstall(context: Context) {
+        val r = update ?: return
+        if (!AppUpdater.canInstall(context)) {
+            toast = L.t("فعّل \"السماح بالتثبيت من هذا المصدر\" ثم اضغط تحديث مرة أخرى",
+                "Allow \"install from this source\", then press Update again")
+            AppUpdater.openInstallPermission(context)
+            return
+        }
+        updateFile?.takeIf { it.exists() }?.let { AppUpdater.install(context, it); return }
+        if (updateProgress != null) return
+        updateProgress = 0f
+        viewModelScope.launch {
+            try {
+                val f = AppUpdater.download(ctx, r) { updateProgress = it }
+                updateFile = f
+                AppUpdater.install(context, f)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast = L.t("فشل تنزيل التحديث: ", "Update download failed: ") + e.message
+            } finally {
+                updateProgress = null
             }
         }
     }

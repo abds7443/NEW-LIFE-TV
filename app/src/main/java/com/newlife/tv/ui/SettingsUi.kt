@@ -87,8 +87,18 @@ fun SettingsContent(vm: MainViewModel) {
             "Save all subscriptions (incl. MAC & device data) and favorites to a file and restore them on another device."), color = Palette.Text2)
         Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { BackupButtons(vm) }
 
+        SectionTitle(L.t("تحديث البرنامج", "App update"), Modifier.padding(top = 16.dp))
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        Text(L.t("النسخة الحالية: ", "Current version: ") + com.newlife.tv.net.AppUpdater.currentVersionName(ctx), color = Palette.Text2)
+        vm.update?.let { Text(L.t("متوفر: ", "Available: ") + it.name, color = Palette.Gold) }
+        vm.updateProgress?.let { androidx.compose.material3.LinearProgressIndicator(progress = { it }, modifier = Modifier.padding(vertical = 6.dp)) }
+        Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NButton(L.t("التحقق من التحديثات", "Check for updates"), enabled = !vm.updateChecking) { vm.checkUpdate(silent = false) }
+            if (vm.update != null) NButton(L.t("تحديث الآن", "Update now"), primary = true) { vm.downloadAndInstall(ctx) }
+        }
+
         SectionTitle(L.t("حول التطبيق", "About"), Modifier.padding(top = 16.dp))
-        Text("NEW LIFE TV 1.0.0", fontSize = 16.sp)
+        Text("NEW LIFE TV", fontSize = 16.sp)
         Text(
             L.t(
                 "مشغل IPTV يدعم بورتالات MAG/Stalker و Xtream Codes وقوائم M3U. لا يحتوي التطبيق على أي قنوات أو محتوى؛ استخدمه فقط مع اشتراكات تملك حق استخدامها.",
@@ -98,4 +108,37 @@ fun SettingsContent(vm: MainViewModel) {
         )
         Spacer(Modifier.height(40.dp))
     }
+}
+
+@Composable
+fun UpdateDialog(vm: MainViewModel) {
+    val r = vm.update ?: return
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (vm.updateProgress == null) vm.updateDialog = false },
+        title = { Text(L.t("يتوفر تحديث جديد", "A new update is available")) },
+        text = {
+            Column {
+                Text(r.name, color = Palette.Gold)
+                Text(L.t("النسخة الحالية: ", "Current: ") + com.newlife.tv.net.AppUpdater.currentVersionName(ctx), color = Palette.Text2)
+                if (r.size > 0) Text(L.t("الحجم: ", "Size: ") + L.size(r.size), color = Palette.Text2)
+                if (r.notes.isNotBlank()) Text(r.notes.take(400), color = Palette.Text2, fontSize = 13.sp)
+                vm.updateProgress?.let {
+                    androidx.compose.material3.LinearProgressIndicator(progress = { it }, modifier = Modifier.padding(top = 10.dp))
+                    Text("${(it * 100).toInt()}%", color = Palette.Text2)
+                }
+                Text(
+                    L.t("سيتم التثبيت فوق النسخة الحالية مع الاحتفاظ بالاشتراكات والإعدادات.",
+                        "It installs over the current version and keeps your subscriptions and settings."),
+                    color = Palette.Text2, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            NButton(L.t("تحديث الآن", "Update now"), primary = true, enabled = vm.updateProgress == null) { vm.downloadAndInstall(ctx) }
+        },
+        dismissButton = {
+            NButton(L.t("لاحقاً", "Later"), enabled = vm.updateProgress == null) { vm.updateDialog = false }
+        },
+    )
 }

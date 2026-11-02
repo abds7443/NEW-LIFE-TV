@@ -131,6 +131,7 @@ class PlayerActivity : ComponentActivity() {
     private var engineKind = ENGINE_EXO
     private val tried = mutableSetOf<String>()
     private var forceHls = false
+    private var uaSearched = false
     private var ready = false
     private var req: PlayRequest? = null
     private var entry: MediaEntry? = null
@@ -205,6 +206,7 @@ class PlayerActivity : ComponentActivity() {
         add("-10s") { engine?.seekBy(-10_000) }
         add("+10s") { engine?.seekBy(10_000) }
         engineButton = add("VLC") { switchEngine() }
+        add(L.t("خيارات", "Options")) { optionsDialog() }
         add(L.t("الجودة", "Quality")) { engine?.tracks(0) }
         add(L.t("الصوت", "Audio")) { engine?.tracks(1) }
         add(L.t("الترجمة", "Subtitles")) { engine?.tracks(2) }
@@ -234,7 +236,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun newSession() {
-        retries = 0; forceHls = false; tried.clear()
+        retries = 0; forceHls = false; uaSearched = false; tried.clear()
         errorDialog?.dismiss(); errorDialog = null
     }
 
@@ -319,6 +321,25 @@ class PlayerActivity : ComponentActivity() {
         }
         val e = entry
         val provider = Session.provider
+        // The server may refuse unknown players: look for a User-Agent it accepts (what makes MX/VLC work).
+        if (!uaSearched && r.url.startsWith("http")) {
+            uaSearched = true
+            info.text = L.t("جارٍ تجربة إعدادات اتصال أخرى…", "Trying other connection settings…")
+            spinner.visibility = View.VISIBLE
+            lifecycleScope.launch {
+                val ua = StreamProbe.findWorkingUa(r)
+                if (ua == null) { spinner.visibility = View.GONE; continueAfterUa(msg, containerIssue); return@launch }
+                applyUserAgent(ua)
+            }
+            return
+        }
+        continueAfterUa(msg, containerIssue)
+    }
+
+    private fun continueAfterUa(msg: String, containerIssue: Boolean) {
+        val r = req ?: return
+        val e = entry
+        val provider = Session.provider
         if (isLive && retries < 2 && e != null && provider != null) {
             retries++
             info.text = L.t("إعادة طلب رابط جديد…", "Requesting a fresh link…") + " ($retries)"
@@ -332,6 +353,41 @@ class PlayerActivity : ComponentActivity() {
         showErrorDialog(msg, manual = false)
     }
 
+    /** Uses [ua] for this stream, remembers it for the subscription and restarts playback. */
+    private fun applyUserAgent(ua: String) {
+        val r = req ?: return
+        Session.uaOverride = ua
+        Session.provider?.profile?.let { p ->
+            ProfileStore.profile(p.id)?.let { ProfileStore.saveProfile(it.copy(playerUserAgent = ua)) }
+        }
+        Toast.makeText(this, L.t("تم العثور على إعداد مناسب للخادم: ", "Found settings the server accepts: ") + ua.take(40), Toast.LENGTH_LONG).show()
+        tried.clear(); retries = 0
+        val e = entry
+        val provider = Session.provider
+        lifecycleScope.launch {
+            val fresh = if (isLive && e != null && provider != null) runCatching { provider.resolve(e) }.getOrNull() else null
+            startPlayback((fresh ?: r).copy(userAgent = ua), null)
+        }
+    }
+
+    private fun optionsDialog() {
+        val r = req ?: return
+        val uas = com.newlife.tv.data.DeviceIdentity.playerUaCandidates()
+        val labels = mutableListOf(L.t("تشغيل بمشغل VLC", "Play with VLC"), L.t("تشغيل بمشغل ExoPlayer", "Play with ExoPlayer"))
+        labels += uas.map { "User-Agent: " + it.take(45) + (if (it == r.userAgent) "  ✓" else "") }
+        AlertDialog.Builder(this)
+            .setTitle(L.t("خيارات التشغيل", "Playback options"))
+            .setItems(labels.toTypedArray()) { _, i ->
+                when (i) {
+                    0 -> { tried.clear(); startPlayback(r, ENGINE_VLC) }
+                    1 -> { tried.clear(); startPlayback(r, ENGINE_EXO) }
+                    else -> applyUserAgent(uas[i - 2])
+                }
+            }
+            .setNegativeButton(L.t("إلغاء", "Cancel"), null)
+            .show()
+    }
+
     private fun showErrorDialog(msg: String, manual: Boolean) {
         val r = req ?: return
         errorDialog?.dismiss()
@@ -340,13 +396,10 @@ class PlayerActivity : ComponentActivity() {
             append(L.t("المشغل: ", "Engine: ")).append(engine?.name ?: "-").append("\n")
             append(L.t("الرابط: ", "Link: ")).append(r.url.take(160)).append("\n\n")
         }
-        val other = if (engineKind == ENGINE_VLC) ENGINE_EXO else ENGINE_VLC
         val dlg = AlertDialog.Builder(this)
             .setTitle(if (manual) L.t("فحص رابط القناة", "Stream link check") else L.t("تعذر تشغيل القناة", "Cannot play this stream"))
             .setMessage(base + L.t("جارٍ فحص الرابط…", "Checking the link…"))
-            .setPositiveButton(L.t("جرّب ", "Try ") + (if (other == ENGINE_VLC) "VLC" else "ExoPlayer")) { _, _ ->
-                tried.clear(); retries = 0; startPlayback(r, other)
-            }
+            .setPositiveButton(L.t("خيارات أخرى", "More options")) { _, _ -> optionsDialog() }
             .setNeutralButton(L.t("مشغل خارجي", "External player")) { _, _ -> ExternalPlayer.open(this, r) }
             .setNegativeButton(if (manual) L.t("إغلاق", "Close") else L.t("رجوع", "Back")) { _, _ -> if (!manual) finish() }
             .show()
