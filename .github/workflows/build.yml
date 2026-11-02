@@ -1,7 +1,12 @@
 name: Build NEW LIFE TV APK
+
 on:
   push:
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,8 +21,17 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk NewLifeTV-1.0.${{ github.run_number }}.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: NewLifeTV-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: NewLifeTV-*.apk
+      - name: Publish update (used by the in-app updater)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: NEW LIFE TV 1.0.${{ github.run_number }}
+          body: Build ${{ github.run_number }} — ${{ github.event.head_commit.message }}
+          files: NewLifeTV-1.0.${{ github.run_number }}.apk
+          make_latest: true
