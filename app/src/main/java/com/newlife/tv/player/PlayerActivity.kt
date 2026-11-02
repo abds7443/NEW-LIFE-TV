@@ -17,7 +17,11 @@ import android.util.Base64
 import android.util.Rational
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.media.AudioManager
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -147,6 +151,11 @@ class PlayerActivity : ComponentActivity() {
     private var tickJob: Job? = null
     private var hideZapJob: Job? = null
     private var errorDialog: AlertDialog? = null
+    private lateinit var osd: TextView
+    private var osdJob: Job? = null
+    private var zoom = 1f
+    private var swipeAcc = 0f
+    private val audio by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     private val bufferMs get() = (ProfileStore.settings.value.bufferSeconds.coerceIn(2, 120) * 1000).coerceAtLeast(2500)
     private val resizeNames get() = listOf(L.t("ملاءمة", "Fit"), L.t("ملء الشاشة", "Stretch"), L.t("تكبير", "Zoom"), L.t("عرض كامل", "Fit width"))
@@ -176,10 +185,41 @@ class PlayerActivity : ComponentActivity() {
         root.addView(container, FrameLayout.LayoutParams(-1, -1))
 
         // transparent layer that toggles the controls on tap (touch screens)
-        val touch = View(this).apply {
-            isFocusable = false
-            setOnClickListener { if (this@PlayerActivity.overlay.visibility == View.VISIBLE) hideOverlay() else showOverlay() }
-        }
+        // gestures: tap = controls, pinch = zoom, double tap = zoom 150%/100%,
+        // swipe up/down right half = volume, left half = brightness, swipe left/right = next/previous channel
+        val touch = View(this).apply { isFocusable = false }
+        val scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean { setZoom(zoom * detector.scaleFactor); return true }
+        })
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean { swipeAcc = 0f; return true }
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (overlay.visibility == View.VISIBLE) hideOverlay() else showOverlay(); return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean { setZoom(if (zoom > 1.01f) 1f else 1.5f); return true }
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+                val start = e1 ?: return false
+                if (scaleDetector.isInProgress || e2.pointerCount > 1) return false
+                if (kotlin.math.abs(e2.y - start.y) < kotlin.math.abs(e2.x - start.x)) return false
+                swipeAcc += distanceY
+                val step = dp(28).toFloat()
+                while (kotlin.math.abs(swipeAcc) >= step) {
+                    val dir = if (swipeAcc > 0) 1 else -1
+                    if (start.x > touch.width / 2f) adjustVolume(dir) else adjustBrightness(dir * 0.06f)
+                    swipeAcc -= dir * step
+                }
+                return true
+            }
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                val start = e1 ?: return false
+                val dx = e2.x - start.x
+                if (kotlin.math.abs(velocityX) > 1200 && kotlin.math.abs(dx) > dp(100) && kotlin.math.abs(dx) > 2 * kotlin.math.abs(e2.y - start.y)) {
+                    zap(if (dx < 0) +1 else -1); return true
+                }
+                return false
+            }
+        })
+        touch.setOnTouchListener { _, ev -> scaleDetector.onTouchEvent(ev); gestures.onTouchEvent(ev); true }
         root.addView(touch, FrameLayout.LayoutParams(-1, -1))
 
         spinner = ProgressBar(this).apply { visibility = View.GONE }
@@ -201,8 +241,15 @@ class PlayerActivity : ComponentActivity() {
             setOnClickListener { scheduleHide(); action() }
             buttons.addView(this, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
         }
+        add(L.t("⏮ السابقة", "⏮ Prev")) { zap(-1) }
         playButton = add("❚❚") { togglePlay() }
         firstButton = playButton!!
+        add(L.t("التالية ⏭", "Next ⏭")) { zap(+1) }
+        add("🔉 −") { adjustVolume(-1) }
+        add("🔊 +") { adjustVolume(+1) }
+        add("🔇") { toggleMute() }
+        add("🔍 +") { setZoom(zoom + 0.1f) }
+        add("🔍 −") { setZoom(zoom - 0.1f) }
         add("-10s") { engine?.seekBy(-10_000) }
         add("+10s") { engine?.seekBy(10_000) }
         engineButton = add("VLC") { switchEngine() }
@@ -224,6 +271,12 @@ class PlayerActivity : ComponentActivity() {
             setPadding(dp(20), dp(10), dp(20), dp(10)); visibility = View.GONE
         }
         root.addView(zapInfo, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(60) })
+        osd = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 26f; setTypeface(typeface, Typeface.BOLD)
+            setBackgroundColor(0xB3000000.toInt()); setPadding(dp(24), dp(12), dp(24), dp(12)); visibility = View.GONE
+        }
+        root.addView(osd, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        volumeControlStream = AudioManager.STREAM_MUSIC
         setContentView(root)
     }
 
@@ -530,8 +583,15 @@ class PlayerActivity : ComponentActivity() {
             when (key) {
                 KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_DPAD_UP -> if (live) { zap(+1); return true }
                 KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> if (live) { zap(-1); return true }
-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> if (!live) { engine?.seekBy(-10_000); showOverlay(); return true }
-                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (!live) { engine?.seekBy(10_000); showOverlay(); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND ->
+                    if (!live) { engine?.seekBy(-10_000); showOverlay(); return true } else { adjustVolume(-1); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ->
+                    if (!live) { engine?.seekBy(10_000); showOverlay(); return true } else { adjustVolume(+1); return true }
+                KeyEvent.KEYCODE_MEDIA_NEXT -> if (live) { zap(+1); return true }
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> if (live) { zap(-1); return true }
+                KeyEvent.KEYCODE_ZOOM_IN, KeyEvent.KEYCODE_PLUS -> { setZoom(zoom + 0.1f); return true }
+                KeyEvent.KEYCODE_ZOOM_OUT, KeyEvent.KEYCODE_MINUS -> { setZoom(zoom - 0.1f); return true }
+                KeyEvent.KEYCODE_MUTE, KeyEvent.KEYCODE_VOLUME_MUTE -> { toggleMute(); return true }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
                 KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> { showOverlay(); return true }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> { togglePlay(); return true }
@@ -539,6 +599,52 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    // ------------------------------------------------------------------ volume / brightness / zoom
+    private fun showOsd(text: String) {
+        osd.text = text
+        osd.visibility = View.VISIBLE
+        osdJob?.cancel()
+        osdJob = lifecycleScope.launch { delay(1300); osd.visibility = View.GONE }
+    }
+
+    private fun volumePercent(): Int {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        return audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max
+    }
+
+    private fun adjustVolume(dir: Int) {
+        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, if (dir > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER, 0)
+        val v = volumePercent()
+        showOsd((if (v == 0) "🔇 " else "🔊 ") + "$v%")
+    }
+
+    private fun toggleMute() {
+        if (Build.VERSION.SDK_INT >= 23) {
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, 0)
+            val muted = audio.isStreamMute(AudioManager.STREAM_MUSIC)
+            showOsd(if (muted) L.t("🔇 كتم الصوت", "🔇 Muted") else "🔊 ${volumePercent()}%")
+        } else {
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+            showOsd(L.t("🔇 كتم الصوت", "🔇 Muted"))
+        }
+    }
+
+    private fun adjustBrightness(delta: Float) {
+        val lp = window.attributes
+        val current = if (lp.screenBrightness < 0) 0.5f else lp.screenBrightness
+        lp.screenBrightness = (current + delta).coerceIn(0.02f, 1f)
+        window.attributes = lp
+        showOsd("☀ ${(lp.screenBrightness * 100).toInt()}%")
+    }
+
+    /** Zooms the picture between 50% and 300% (pinch, double tap, buttons or +/- keys). */
+    private fun setZoom(z: Float) {
+        zoom = z.coerceIn(0.5f, 3f)
+        container.scaleX = zoom
+        container.scaleY = zoom
+        showOsd("🔍 ${(zoom * 100).toInt()}%")
     }
 
     // ------------------------------------------------------------------ actions
