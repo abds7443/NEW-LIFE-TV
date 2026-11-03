@@ -19,6 +19,8 @@ import com.newlife.tv.data.MediaEntry
 import com.newlife.tv.data.PlayRequest
 import com.newlife.tv.data.Profile
 import com.newlife.tv.data.ProfileStore
+import com.newlife.tv.data.Pins
+import com.newlife.tv.data.ProfileType
 import com.newlife.tv.data.ScheduledRecording
 import com.newlife.tv.data.Season
 import com.newlife.tv.net.IptvProvider
@@ -44,6 +46,9 @@ sealed interface Screen {
     data class SeriesDetail(val entry: MediaEntry) : Screen
     data object Settings : Screen
 }
+
+/** A pending action waiting for the parental PIN (or the admin PIN when [admin]). */
+class PinRequest(val title: String, val admin: Boolean = false, val onSuccess: () -> Unit)
 
 enum class Section(val kind: ContentKind?) {
     LIVE(ContentKind.LIVE), VOD(ContentKind.VOD), SERIES(ContentKind.SERIES), GUIDE(ContentKind.LIVE),
@@ -195,7 +200,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 categories[kind] = cats
                 loading = false
             }
-            val cat = selectedCat[kind] ?: categories[kind]?.firstOrNull()?.id ?: IptvProvider.ALL
+            val cat = selectedCat[kind]?.takeIf { !isCatHidden(kind, it) } ?: visibleCategories(kind).firstOrNull()?.id ?: IptvProvider.ALL
             selectCategory(kind, cat)
         }
     }
@@ -205,17 +210,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             val key = "$kind|$id"
-            cache[key]?.let { entries = it; entriesKind = kind; return@launch }
+            cache[key]?.let { setEntries(kind, it); return@launch }
             loading = true
             try {
                 val list = provider?.entries(kind, id).orEmpty()
                 cache[key] = list
-                entries = list
-                entriesKind = kind
+                setEntries(kind, list)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                entries = emptyList(); entriesKind = kind
+                setEntries(kind, emptyList())
                 toast = L.t("تعذر تحميل القائمة: ", "Failed to load list: ") + e.message
             } finally {
                 loading = false
@@ -251,6 +255,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openSeries(e: MediaEntry) {
+        val key = needsPin(e)
+        if (key != null) { withUnlock(key, L.t("هذا المسلسل مقفل", "This series is locked")) { openSeries(e) }; return }
         loadSeasons(e)
         push(Screen.SeriesDetail(e))
     }
@@ -281,7 +287,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             for (kind in ContentKind.entries) {
                 val key = "$kind|${IptvProvider.ALL}"
                 val all = cache[key] ?: runCatching { p.entries(kind, IptvProvider.ALL) }.getOrDefault(emptyList()).also { cache[key] = it }
-                out += all.filter { it.title.contains(q, ignoreCase = true) }.take(300)
+                out += all.filter { it.title.contains(q, ignoreCase = true) && !isCatHidden(kind, it.categoryId) }.take(300)
             }
             searchResults = out
             searching = false
@@ -295,12 +301,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (st.playerEngine == "external" || st.externalPlayer) {
             ExternalPlayer.open(context, req); return
         }
-        Session.zapList = list
+        Session.zapList = list.filter { needsPin(it) == null }
         PlayerActivity.start(context, req, entry, if (entry == null) -1 else list.indexOf(entry))
     }
 
     fun play(context: Context, e: MediaEntry, list: List<MediaEntry> = listOf(e)) {
         val p = provider ?: return
+        val key = needsPin(e)
+        if (key != null) { withUnlock(key, L.t("هذه القناة مقفلة", "This item is locked")) { play(context, e, list) }; return }
         viewModelScope.launch {
             try {
                 val req = p.resolve(e)
@@ -483,5 +491,150 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 updateProgress = null
             }
         }
+    }
+
+    // ================================================================ parental control & admin mode
+    var parental by mutableStateOf(ProfileStore.parental.value); private set
+    var pinRequest by mutableStateOf<PinRequest?>(null)
+    var itemMenu by mutableStateOf<MediaEntry?>(null)
+    var categoryMenu by mutableStateOf<Pair<ContentKind, Category>?>(null)
+    var appLocked by mutableStateOf(ProfileStore.settings.value.appLockEnabled)
+    private val unlocked = HashSet<String>()
+    private var rawEntries: List<MediaEntry> = emptyList()
+    private val pid: String get() = activeProfile?.id ?: ""
+
+    private fun setEntries(kind: ContentKind, list: List<MediaEntry>) {
+        rawEntries = list
+        entriesKind = kind
+        entries = list.filter { !isCatHidden(kind, it.categoryId) }
+    }
+
+    private fun refreshParental() {
+        parental = ProfileStore.parental.value
+        entriesKind?.let { k -> entries = rawEntries.filter { !isCatHidden(k, it.categoryId) } }
+    }
+
+    fun catKey(kind: ContentKind, id: String) = ProfileStore.catKey(pid, kind, id)
+    fun isCatLocked(kind: ContentKind, id: String) = parental.locked.contains(catKey(kind, id))
+    fun isCatHidden(kind: ContentKind, id: String) = id.isNotEmpty() && parental.hidden.contains(catKey(kind, id))
+    fun isChLocked(e: MediaEntry) = parental.locked.contains(ProfileStore.chKey(pid, e)) || isCatLocked(e.kind, e.categoryId)
+    fun visibleCategories(kind: ContentKind) = categories[kind].orEmpty().filter { !isCatHidden(kind, it.id) }
+
+    /** Key that still needs the PIN before [e] can be opened, or null. */
+    private fun needsPin(e: MediaEntry): String? {
+        val ck = ProfileStore.chKey(pid, e)
+        val gk = catKey(e.kind, e.categoryId)
+        return when {
+            parental.locked.contains(ck) && ck !in unlocked -> ck
+            parental.locked.contains(gk) && gk !in unlocked -> gk
+            else -> null
+        }
+    }
+
+    private fun withUnlock(key: String?, title: String, action: () -> Unit) {
+        if (key == null) action() else pinRequest = PinRequest(title) { unlocked += key; action() }
+    }
+
+    fun requireParental(title: String, action: () -> Unit) { pinRequest = PinRequest(title, onSuccess = action) }
+
+    /** Returns false when the PIN is wrong. */
+    fun submitPin(pin: String): Boolean {
+        val r = pinRequest ?: return false
+        val ok = if (r.admin) Pins.isAdmin(pin) else ProfileStore.checkParentalPin(pin)
+        if (!ok) return false
+        pinRequest = null
+        r.onSuccess()
+        return true
+    }
+
+    fun openCategory(kind: ContentKind, id: String) {
+        val key = catKey(kind, id)
+        withUnlock(if (isCatLocked(kind, id) && key !in unlocked) key else null, L.t("هذه المجموعة مقفلة", "This group is locked")) {
+            selectCategory(kind, id)
+        }
+    }
+
+    fun toggleLockEntry(e: MediaEntry) {
+        val k = ProfileStore.chKey(pid, e)
+        if (parental.locked.contains(k)) {
+            requireParental(L.t("إلغاء قفل: ", "Unlock: ") + e.title) { ProfileStore.setLocked(k, false); refreshParental() }
+        } else {
+            ProfileStore.setLocked(k, true); unlocked -= k; refreshParental()
+            toast = L.t("تم قفل: ", "Locked: ") + e.title
+        }
+    }
+
+    fun toggleLockCategory(kind: ContentKind, c: Category) {
+        val k = catKey(kind, c.id)
+        if (parental.locked.contains(k)) {
+            requireParental(L.t("إلغاء قفل المجموعة: ", "Unlock group: ") + c.title) { ProfileStore.setLocked(k, false); refreshParental() }
+        } else {
+            ProfileStore.setLocked(k, true); unlocked -= k; refreshParental()
+            toast = L.t("تم قفل المجموعة: ", "Group locked: ") + c.title
+        }
+    }
+
+    fun hideCategory(kind: ContentKind, c: Category) {
+        if (c.id == IptvProvider.ALL) return
+        ProfileStore.setHidden(listOf(catKey(kind, c.id)), true)
+        refreshParental()
+        toast = L.t("تم إخفاء: ", "Hidden: ") + c.title
+        if (selectedCat[kind] == c.id) selectCategory(kind, IptvProvider.ALL)
+    }
+
+    /** Applies the selection of the "hide groups" dialog for one content type. */
+    fun setHiddenCategories(kind: ContentKind, hiddenIds: Set<String>) {
+        val all = categories[kind].orEmpty().filter { it.id != IptvProvider.ALL }
+        ProfileStore.setHidden(all.filter { it.id !in hiddenIds }.map { catKey(kind, it.id) }, false)
+        ProfileStore.setHidden(all.filter { it.id in hiddenIds }.map { catKey(kind, it.id) }, true)
+        refreshParental()
+        if (selectedCat[kind] in hiddenIds) selectCategory(kind, IptvProvider.ALL)
+    }
+
+    fun ensureCategories(kind: ContentKind) {
+        if (categories[kind] != null) return
+        val p = provider ?: return
+        viewModelScope.launch { categories[kind] = runCatching { p.categories(kind) }.getOrNull().orEmpty() }
+    }
+
+    fun unlockAllForSession() { unlocked += parental.locked }
+
+    fun clearAllLocks() {
+        requireParental(L.t("إلغاء كل الأقفال", "Remove all locks")) { ProfileStore.clearLocks(); refreshParental() }
+    }
+
+    /** Returns an error message, or null when the PIN was changed. */
+    fun changePin(old: String, new: String, confirm: String): String? {
+        if (!ProfileStore.checkParentalPin(old)) return L.t("الرقم السري الحالي غير صحيح", "Current PIN is wrong")
+        if (new.length < 4 || !new.all { it.isDigit() }) return L.t("الرقم الجديد يجب أن يكون 4 أرقام على الأقل", "New PIN must be at least 4 digits")
+        if (new != confirm) return L.t("التأكيد لا يطابق الرقم الجديد", "Confirmation does not match")
+        ProfileStore.updateSettings { it.copy(parentalPin = new) }
+        toast = L.t("تم تغيير الرقم السري", "PIN changed")
+        return null
+    }
+
+    fun unlockApp(pin: String): Boolean = ProfileStore.checkParentalPin(pin).also { if (it) appLocked = false }
+
+    fun setAppLock(enabled: Boolean) {
+        requireParental(L.t("تأكيد بالرقم السري", "Confirm with PIN")) {
+            ProfileStore.updateSettings { it.copy(appLockEnabled = enabled) }
+        }
+    }
+
+    /** Admin (service) mode needs the admin PIN in both directions. */
+    fun toggleAdminMode() {
+        pinRequest = PinRequest(L.t("الرقم السري للإدارة", "Admin PIN"), admin = true) {
+            ProfileStore.updateSettings { it.copy(adminHidden = !it.adminHidden) }
+            if (ProfileStore.settings.value.adminHidden && section == Section.RECORDINGS) section = Section.LIVE
+            toast = if (ProfileStore.settings.value.adminHidden) L.t("تم إخفاء قوائم التعديل والتسجيل", "Edit menus and recordings hidden")
+            else L.t("تم إظهار قوائم التعديل والتسجيل", "Edit menus and recordings shown")
+        }
+    }
+
+    // ================================================================ free packages
+    fun addFreePackage(name: String, url: String) {
+        if (ProfileStore.profiles.value.any { it.portalUrl == url }) { toast = L.t("هذه الباقة مضافة مسبقاً", "Already added"); return }
+        ProfileStore.saveProfile(Profile(type = ProfileType.M3U, nickname = name, portalUrl = url))
+        toast = L.t("تمت إضافة: ", "Added: ") + name
     }
 }

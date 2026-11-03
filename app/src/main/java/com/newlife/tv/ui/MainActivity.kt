@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -29,7 +29,7 @@ import androidx.core.content.ContextCompat
 import com.newlife.tv.data.L
 import com.newlife.tv.data.ProfileStore
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val vm: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,14 +54,21 @@ fun AppRoot(vm: MainViewModel) {
     CompositionLocalProvider(LocalLayoutDirection provides dir) {
         Surface(Modifier.fillMaxSize(), color = Palette.Bg) {
             BackHandler(enabled = vm.stack.size > 1) { vm.back() }
-            if (vm.updateDialog) UpdateDialog(vm)
-            CrashReportDialog()
-            when (val s = vm.screen) {
-                Screen.Profiles -> ProfilesScreen(vm)
-                is Screen.Edit -> ProfileEditor(vm, s.profile)
-                Screen.Home -> HomeScreen(vm)
-                is Screen.SeriesDetail -> SeriesScreen(vm, s.entry)
-                Screen.Settings -> SettingsPage(vm)
+            if (vm.appLocked) {
+                LockScreen(vm)
+            } else {
+                if (vm.updateDialog) UpdateDialog(vm)
+                CrashReportDialog()
+                when (val s = vm.screen) {
+                    Screen.Profiles -> ProfilesScreen(vm)
+                    is Screen.Edit -> ProfileEditor(vm, s.profile)
+                    Screen.Home -> HomeScreen(vm)
+                    is Screen.SeriesDetail -> SeriesScreen(vm, s.entry)
+                    Screen.Settings -> SettingsPage(vm)
+                }
+                PinDialog(vm)
+                ItemMenuDialog(vm)
+                CategoryMenuDialog(vm)
             }
         }
     }

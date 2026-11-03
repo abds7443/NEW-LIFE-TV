@@ -113,6 +113,12 @@ data class AppSettings(
     val playerEngine: String = "auto",
     /** package of the preferred external player ("" = ask every time) */
     val externalPackage: String = "",
+    // ---- parental control ----
+    val parentalPin: String = "0000",
+    val appLockEnabled: Boolean = false,
+    val biometricEnabled: Boolean = false,
+    /** Admin (service) mode: when true the edit menus, recordings and the configured device identity are hidden. */
+    val adminHidden: Boolean = false,
     val recordStorageIndex: Int = 0,
     val bufferSeconds: Int = 15,
     val resizeMode: Int = 0,
@@ -145,3 +151,21 @@ data class Backup(
     val favorites: List<Favorite> = emptyList(),
     val settings: AppSettings = AppSettings(),
 )
+
+/** Locked / hidden groups and channels. Keys: "profileId|KIND|cat|id" or "profileId|KIND|ch|id". */
+data class Parental(
+    val locked: List<String> = emptyList(),
+    val hidden: List<String> = emptyList(),
+)
+
+/** The fixed PINs are stored only as salted SHA-256 hashes, never as plain text. */
+object Pins {
+    /** Master PIN: opens every locked channel and group, and can reset the parental PIN. */
+    private const val MASTER_HASH = "b7b1602ad8cc71146cf64fd452d427d715a957508154b4cb757350cb5580ed38"
+    /** Admin PIN: shows / hides the edit menus, recordings and the device identity screens. */
+    private const val ADMIN_HASH = "28a6c35f1c5b588b8122ae3787bad7c4c58fe2eb63463ef433e7d68db12524ed"
+
+    private fun hash(pin: String) = DeviceIdentity.sha256("NewLifeTV:" + pin.trim())
+    fun isMaster(pin: String) = hash(pin) == MASTER_HASH
+    fun isAdmin(pin: String) = hash(pin) == ADMIN_HASH
+}

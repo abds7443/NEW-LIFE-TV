@@ -14,6 +14,9 @@ object L {
 
     fun hm(ms: Long): String = SimpleDateFormat("HH:mm", Locale.US).format(Date(ms))
     fun day(ms: Long): String = SimpleDateFormat("EEE dd/MM", if (arabic) Locale("ar") else Locale.US).format(Date(ms))
+    fun fullDate(ms: Long): String =
+        SimpleDateFormat("EEEE dd/MM/yyyy", if (arabic) Locale("ar") else Locale.US).format(Date(ms))
+
     fun dateTime(ms: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(ms))
 
     fun size(bytes: Long): String = when {

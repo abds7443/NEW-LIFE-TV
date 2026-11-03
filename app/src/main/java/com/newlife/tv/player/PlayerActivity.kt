@@ -260,6 +260,7 @@ class PlayerActivity : ComponentActivity() {
         add(L.t("أبعاد الصورة", "Aspect")) { cycleResize() }
         add(L.t("صورة في صورة", "PiP")) { enterPip() }
         recButton = add(L.t("تسجيل", "Record")) { recordDialog() }
+        if (ProfileStore.settings.value.adminHidden) recButton?.visibility = View.GONE
         add(L.t("مشغل خارجي", "External player")) { req?.let { ExternalPlayer.open(this, it) } }
         add(L.t("المفضلة", "Favorite")) { toggleFav() }
         add(L.t("فحص الرابط", "Check link")) { showErrorDialog(L.t("فحص يدوي للرابط", "Manual link check"), manual = true) }
@@ -663,6 +664,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun recordDialog() {
+        if (ProfileStore.settings.value.adminHidden) return
         val r = req ?: return
         if (r.url.startsWith("file:") || r.url.startsWith("/")) return
         recordingId?.let { id ->

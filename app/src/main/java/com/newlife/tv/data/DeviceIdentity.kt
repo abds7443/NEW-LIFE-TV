@@ -83,4 +83,21 @@ object DeviceIdentity {
 
     private fun hash(alg: String, s: String): String =
         MessageDigest.getInstance(alg).digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    /** The device's own hardware MAC (works on most TV boxes; phones since Android 6 hide it). */
+    fun realDeviceMac(): String {
+        for (n in listOf("eth0", "wlan0")) {
+            val v = runCatching { java.io.File("/sys/class/net/$n/address").readText().trim().uppercase() }.getOrNull()
+            if (v != null && v.length == 17 && v != "02:00:00:00:00:00" && v != "00:00:00:00:00:00") return v
+        }
+        runCatching {
+            for (ni in java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                val hw = ni.hardwareAddress ?: continue
+                if (hw.size != 6) continue
+                val v = hw.joinToString(":") { "%02X".format(it) }
+                if (v != "02:00:00:00:00:00" && v != "00:00:00:00:00:00") return v
+            }
+        }
+        return L.t("غير متاح على هذا الجهاز", "Not available on this device")
+    }
 }

@@ -15,6 +15,7 @@ object ProfileStore {
     val favorites = MutableStateFlow<List<Favorite>>(emptyList())
     val settings = MutableStateFlow(AppSettings())
     val schedules = MutableStateFlow<List<ScheduledRecording>>(emptyList())
+    val parental = MutableStateFlow(Parental())
 
     @Synchronized
     fun init(ctx: Context) {
@@ -24,6 +25,7 @@ object ProfileStore {
         favorites.value = read("favorites", object : TypeToken<List<Favorite>>() {}) ?: emptyList()
         settings.value = read("settings", object : TypeToken<AppSettings>() {}) ?: AppSettings()
         schedules.value = read("schedules", object : TypeToken<List<ScheduledRecording>>() {}) ?: emptyList()
+        parental.value = read("parental", object : TypeToken<Parental>() {}) ?: Parental()
         L.arabic = settings.value.arabic
     }
 
@@ -112,5 +114,28 @@ object ProfileStore {
         favorites.value = merged
         write("favorites", merged)
         return n
+    }
+
+    // ---------------- parental control ----------------
+    fun catKey(profileId: String, kind: ContentKind, id: String) = "$profileId|$kind|cat|$id"
+    fun chKey(profileId: String, e: MediaEntry) = "$profileId|${e.kind}|ch|${e.id}"
+
+    fun checkParentalPin(pin: String) = pin == settings.value.parentalPin || Pins.isMaster(pin)
+
+    fun setLocked(key: String, locked: Boolean) {
+        val p = parental.value
+        parental.value = p.copy(locked = if (locked) (p.locked + key).distinct() else p.locked - key)
+        write("parental", parental.value)
+    }
+
+    fun setHidden(keys: Collection<String>, hidden: Boolean) {
+        val p = parental.value
+        parental.value = p.copy(hidden = if (hidden) (p.hidden + keys).distinct() else p.hidden - keys.toSet())
+        write("parental", parental.value)
+    }
+
+    fun clearLocks() {
+        parental.value = parental.value.copy(locked = emptyList())
+        write("parental", parental.value)
     }
 }

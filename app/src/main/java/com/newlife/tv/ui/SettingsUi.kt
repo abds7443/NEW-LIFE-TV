@@ -18,6 +18,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -82,10 +85,40 @@ fun SettingsContent(vm: MainViewModel) {
             s.resizeMode,
         ) { v -> update { it.copy(resizeMode = v) } }
 
+        // ---------------- parental control ----------------
+        SectionTitle(L.t("الرقابة الأبوية (Parental Control)", "Parental control"), Modifier.padding(top = 16.dp))
+        Text(
+            L.t("اضغط مطولاً على أي قناة أو مجموعة لقفلها أو إخفائها. القنوات والمجموعات المقفلة تحتاج الرقم السري لفتحها.",
+                "Long-press any channel or group to lock or hide it. Locked items need the PIN to open."),
+            color = Palette.Text2, fontSize = 12.sp,
+        )
+        var changePin by remember { mutableStateOf(false) }
+        var hideDialog by remember { mutableStateOf(false) }
+        val ctx2 = androidx.compose.ui.platform.LocalContext.current
+        val bio = remember { biometricAvailable(ctx2) }
+        Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NButton(L.t("تغيير الرقم السري", "Change PIN")) { changePin = true }
+            NButton(L.t("إخفاء الباقات", "Hide groups")) {
+                if (vm.activeProfile == null) vm.toast = L.t("سجّل الدخول إلى اشتراك أولاً", "Log in to a subscription first")
+                else vm.requireParental(L.t("إخفاء الباقات", "Hide groups")) { hideDialog = true }
+            }
+            NButton(L.t("إلغاء كل الأقفال", "Remove all locks")) { vm.clearAllLocks() }
+        }
+        Text(L.t("مقفل: ", "Locked: ") + vm.parental.locked.size + "   •   " + L.t("مخفي: ", "Hidden: ") + vm.parental.hidden.size, color = Palette.Text2, fontSize = 12.sp)
+        ChoiceRow(L.t("قفل البرنامج عند الفتح", "Lock the app at start"), yesNo, s.appLockEnabled) { v -> if (v != s.appLockEnabled) vm.setAppLock(v) }
+        if (s.appLockEnabled) {
+            if (bio) ChoiceRow(L.t("الفتح ببصمة الإصبع أو الوجه", "Unlock with fingerprint or face"), yesNo, s.biometricEnabled) { v -> update { it.copy(biometricEnabled = v) } }
+            else Text(L.t("هذا الجهاز لا يدعم البصمة أو الوجه، سيُستخدم الرقم السري.", "No fingerprint/face on this device; the PIN will be used."), color = Palette.Text2, fontSize = 12.sp)
+        }
+        if (changePin) ChangePinDialog(vm) { changePin = false }
+        if (hideDialog) HideCategoriesDialog(vm) { hideDialog = false }
+
+        if (!s.adminHidden) {
         SectionTitle(L.t("النسخ الاحتياطي", "Backup"), Modifier.padding(top = 16.dp))
         Text(L.t("احفظ كل الاشتراكات (مع MAC والبيانات) والمفضلة في ملف، واسترجعها على جهاز آخر.",
             "Save all subscriptions (incl. MAC & device data) and favorites to a file and restore them on another device."), color = Palette.Text2)
         Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { BackupButtons(vm) }
+        }
 
         SectionTitle(L.t("تحديث البرنامج", "App update"), Modifier.padding(top = 16.dp))
         val ctx = androidx.compose.ui.platform.LocalContext.current

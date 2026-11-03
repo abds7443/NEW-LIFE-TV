@@ -19,7 +19,8 @@ import kotlin.coroutines.coroutineContext
  * Every successful GitHub build publishes a release "v<build number>" with the APK attached.
  */
 object AppUpdater {
-    const val REPO = "abds7443/NEW-LIFE-TV"
+    /** Public repository that only holds the published APKs (the source code repository can stay private). */
+    const val REPO = "abds7443/NEW-LIFE-TV-Updates"
     private const val API = "https://api.github.com/repos/$REPO/releases/latest"
 
     data class Release(val versionCode: Long, val name: String, val notes: String, val apkUrl: String, val size: Long)

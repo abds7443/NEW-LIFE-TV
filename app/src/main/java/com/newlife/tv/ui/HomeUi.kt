@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -82,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.newlife.tv.data.ContentKind
+import com.newlife.tv.data.DeviceIdentity
 import com.newlife.tv.data.EpgProgram
 import com.newlife.tv.data.L
 import com.newlife.tv.data.MediaEntry
@@ -123,6 +125,10 @@ private fun sectionLabel(s: Section): String = when (s) {
 
 // ============================================================================ home shell
 
+/** True when the admin (service) mode hides edit menus and recordings. */
+@Composable
+fun adminHidden(): Boolean = ProfileStore.settings.collectAsState().value.adminHidden
+
 /** true on wide screens (tablet / big TV): side columns; false on phones and small TVs: compact pickers. */
 private val LocalWide = compositionLocalOf { true }
 private val LocalRailCompact = compositionLocalOf { false }
@@ -151,12 +157,15 @@ fun HomeScreen(vm: MainViewModel) {
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 6.dp))
             } else Text("NL", fontWeight = FontWeight.Black, fontSize = 18.sp, color = Palette.Gold, modifier = Modifier.padding(10.dp))
             Spacer(Modifier.height(10.dp))
-            Section.entries.forEach { s ->
+            val hideAdmin = adminHidden()
+            Section.entries.filter { !(hideAdmin && it == Section.RECORDINGS) }.forEach { s ->
                 RailItem(sectionIcon(s), sectionLabel(s), vm.section == s) { vm.selectSection(s) }
             }
             Spacer(Modifier.height(10.dp))
             RailItem(Icons.Filled.Refresh, L.t("تحديث", "Refresh"), false) { vm.refresh() }
             RailItem(Icons.Filled.Logout, L.t("تبديل / خروج", "Switch / log out"), false) { vm.logout() }
+            RailItem(Icons.Filled.AdminPanelSettings,
+                if (hideAdmin) L.t("إظهار قوائم التعديل", "Show edit menus") else L.t("إخفاء قوائم التعديل", "Hide edit menus"), false) { vm.toggleAdminMode() }
         }
 
         // ---------------- content ----------------
@@ -166,7 +175,10 @@ fun HomeScreen(vm: MainViewModel) {
                 val expiry = vm.account?.fields?.firstOrNull { it.first == L.t("تاريخ الانتهاء", "Expiry") }?.second
                 if (expiry != null) Badge(L.t("ينتهي: ", "Expires: ") + expiry, Palette.Gold)
                 Spacer(Modifier.width(12.dp))
-                Text(L.hm(now), fontSize = 20.sp, color = Palette.Text2)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(L.hm(now), fontSize = 20.sp, color = Palette.Text2, fontWeight = FontWeight.Bold)
+                    Text(L.fullDate(now), fontSize = 11.sp, color = Palette.Text2)
+                }
             }
             if (vm.loading || vm.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
             Box(Modifier.fillMaxSize()) {
@@ -207,14 +219,14 @@ private fun RailItem(icon: ImageVector, label: String, selected: Boolean, onClic
 
 @Composable
 private fun CategoryColumn(vm: MainViewModel, kind: ContentKind) {
-    val cats = vm.categories[kind].orEmpty()
+    val cats = vm.visibleCategories(kind)
     val sel = vm.selectedCat[kind]
     LazyColumn(Modifier.width(230.dp).fillMaxHeight().background(Palette.Surface.copy(alpha = 0.5f)).padding(6.dp)) {
         items(cats) { c ->
             Text(
-                c.title,
+                (if (vm.isCatLocked(kind, c.id)) "🔒 " else "") + c.title,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)
-                    .tvClick(selected = c.id == sel) { vm.selectCategory(kind, c.id) }.padding(10.dp),
+                    .tvClick(selected = c.id == sel, onLongClick = { vm.categoryMenu = kind to c }) { vm.openCategory(kind, c.id) }.padding(10.dp),
                 color = if (c.id == sel) Palette.Accent else Color.White,
                 fontWeight = if (c.id == sel) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp,
@@ -226,10 +238,11 @@ private fun CategoryColumn(vm: MainViewModel, kind: ContentKind) {
 /** Compact screens: one button showing the current group; it opens a searchable list of all groups. */
 @Composable
 private fun CategoryPicker(vm: MainViewModel, kind: ContentKind) {
-    val cats = vm.categories[kind].orEmpty()
+    val cats = vm.visibleCategories(kind)
     val sel = vm.selectedCat[kind]
     var open by remember { mutableStateOf(false) }
-    val current = cats.firstOrNull { it.id == sel }?.title ?: L.t("اختر مجموعة", "Choose a group")
+    val current = cats.firstOrNull { it.id == sel }?.let { (if (vm.isCatLocked(kind, it.id)) "🔒 " else "") + it.title }
+        ?: L.t("اختر مجموعة", "Choose a group")
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         NButton("📂  $current  ▾", modifier = Modifier.weight(1f, fill = false)) { open = true }
         Spacer(Modifier.width(8.dp))
@@ -247,8 +260,10 @@ private fun CategoryPicker(vm: MainViewModel, kind: ContentKind) {
                     LazyColumn(Modifier.heightIn(max = 380.dp).padding(top = 6.dp)) {
                         items(shown) { c ->
                             Text(
-                                c.title,
-                                Modifier.fillMaxWidth().tvClick(selected = c.id == sel) { vm.selectCategory(kind, c.id); open = false }.padding(10.dp),
+                                (if (vm.isCatLocked(kind, c.id)) "🔒 " else "") + c.title,
+                                Modifier.fillMaxWidth().tvClick(selected = c.id == sel, onLongClick = { open = false; vm.categoryMenu = kind to c }) {
+                                    open = false; vm.openCategory(kind, c.id)
+                                }.padding(10.dp),
                                 color = if (c.id == sel) Palette.Accent else Color.White,
                                 maxLines = 2, overflow = TextOverflow.Ellipsis,
                             )
@@ -289,10 +304,14 @@ private fun EmptyHint(text: String) {
 private fun LiveSection(vm: MainViewModel) {
     val ctx = LocalContext.current
     val wide = LocalWide.current
-    val list = if (vm.entriesKind == ContentKind.LIVE) vm.entries else emptyList()
+    val all = if (vm.entriesKind == ContentKind.LIVE) vm.entries else emptyList()
+    var q by remember { mutableStateOf("") }
+    val list = remember(all, q) { if (q.isBlank()) all else all.filter { it.title.contains(q.trim(), ignoreCase = true) } }
     WithCategories(vm, ContentKind.LIVE) {
         Row(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxHeight()) {
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+            QuickSearch(q, all.size, list.size) { q = it }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا توجد قنوات في هذه المجموعة", "No channels in this group"))
                 LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
                     itemsIndexed(list) { i, e ->
@@ -301,7 +320,7 @@ private fun LiveSection(vm: MainViewModel) {
                         val nowProg = vm.epg[e.id]?.firstOrNull { it.isNow }
                         Row(
                             Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                .tvClick(onLongClick = { vm.toggleFav(e) }, onFocus = { vm.focus(e) }) { vm.play(ctx, e, list) }
+                                .tvClick(onLongClick = { vm.itemMenu = e }, onFocus = { vm.focus(e) }) { vm.play(ctx, e, list) }
                                 .padding(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -314,13 +333,25 @@ private fun LiveSection(vm: MainViewModel) {
                             }
                             if (e.catchupDays > 0) Icon(Icons.Filled.History, null, tint = Palette.Text2, modifier = Modifier.size(16.dp))
                             if (vm.isFav(e)) Icon(Icons.Filled.Favorite, null, tint = Palette.Gold, modifier = Modifier.size(16.dp))
+                            if (vm.isChLocked(e)) LockBadge()
                             Icon(Icons.Filled.PlayArrow, null, tint = Palette.Text2, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
             }
+            }
             if (wide) ChannelPanel(vm, list)
         }
+    }
+}
+
+/** Small search box above a channel / movie list (filters the current group). */
+@Composable
+private fun QuickSearch(q: String, total: Int, shown: Int, onChange: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Field(L.t("🔍 بحث عن قناة في هذه المجموعة", "🔍 Search in this group"), q, Modifier.weight(1f)) { onChange(it) }
+        Spacer(Modifier.width(8.dp))
+        Text(if (q.isBlank()) "$total" else "$shown / $total", color = Palette.Text2, fontSize = 12.sp)
     }
 }
 
@@ -351,7 +382,7 @@ private fun ChannelPanelBody(vm: MainViewModel, e: MediaEntry, list: List<MediaE
             NButton(L.t("مشاهدة", "Watch"), Icons.Filled.PlayArrow, primary = true) { vm.play(ctx, e, list) }
             NButton(if (vm.isFav(e)) L.t("إزالة", "Unfav") else L.t("مفضلة", "Fav"),
                 if (vm.isFav(e)) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder) { vm.toggleFav(e) }
-            RecordNowButton(vm, e)
+            if (!adminHidden()) RecordNowButton(vm, e)
         }
         Spacer(Modifier.height(10.dp))
         val programs = vm.epg[e.id]
@@ -401,10 +432,17 @@ private fun RecordNowButton(vm: MainViewModel, e: MediaEntry) {
 
 @Composable
 private fun PosterSection(vm: MainViewModel, kind: ContentKind) {
-    val list = if (vm.entriesKind == kind) vm.entries else emptyList()
+    val all = if (vm.entriesKind == kind) vm.entries else emptyList()
+    var q by remember(kind) { mutableStateOf("") }
+    val list = remember(all, q) { if (q.isBlank()) all else all.filter { it.title.contains(q.trim(), ignoreCase = true) } }
     WithCategories(vm, kind) {
-        if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا يوجد محتوى", "Nothing here"))
-        PosterGrid(vm, list)
+        Column(Modifier.fillMaxSize()) {
+            QuickSearch(q, all.size, list.size) { q = it }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا يوجد محتوى", "Nothing here"))
+                PosterGrid(vm, list)
+            }
+        }
     }
 }
 
@@ -413,7 +451,7 @@ private fun PosterGrid(vm: MainViewModel, list: List<MediaEntry>) {
     LazyVerticalGrid(GridCells.Adaptive(140.dp), Modifier.fillMaxSize().padding(8.dp)) {
         itemsIndexed(list) { _, e ->
             Column(
-                Modifier.padding(5.dp).tvClick(onLongClick = { vm.toggleFav(e) }) {
+                Modifier.padding(5.dp).tvClick(onLongClick = { vm.itemMenu = e }) {
                     if (e.kind == ContentKind.SERIES) vm.openSeries(e) else vm.vodDialog = e
                 }.padding(5.dp)
             ) {
@@ -422,6 +460,7 @@ private fun PosterGrid(vm: MainViewModel, list: List<MediaEntry>) {
                         tint = Palette.Text2, modifier = Modifier.align(Alignment.Center).size(36.dp))
                     if (e.logo.isNotBlank()) AsyncImage(e.logo, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                     if (vm.isFav(e)) Icon(Icons.Filled.Favorite, null, tint = Palette.Gold, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp))
+                    if (vm.isChLocked(e)) Box(Modifier.align(Alignment.TopStart).padding(4.dp)) { Badge("🔒", Palette.Gold) }
                     if (e.rating.isNotBlank() && e.rating != "0") Box(Modifier.align(Alignment.BottomStart).padding(4.dp)) { Badge("★ ${e.rating.take(3)}", Palette.Gold) }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -455,7 +494,7 @@ private fun VodDialog(vm: MainViewModel, e: MediaEntry) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NButton(L.t("تشغيل", "Play"), Icons.Filled.PlayArrow, primary = true) { vm.vodDialog = null; vm.play(ctx, e) }
                 NButton(if (vm.isFav(e)) L.t("إزالة من المفضلة", "Unfavorite") else L.t("المفضلة", "Favorite"), Icons.Filled.Favorite) { vm.toggleFav(e) }
-                NButton(L.t("تنزيل", "Download"), Icons.Filled.FiberManualRecord) { vm.recordNow(e, 600); vm.vodDialog = null }
+                if (!adminHidden()) NButton(L.t("تنزيل", "Download"), Icons.Filled.FiberManualRecord) { vm.recordNow(e, 600); vm.vodDialog = null }
             }
         },
         dismissButton = { TextButton(onClick = { vm.vodDialog = null }) { Text(L.t("إغلاق", "Close")) } },
@@ -599,17 +638,18 @@ private fun ProgramRow(vm: MainViewModel, ch: MediaEntry, p: EpgProgram) {
         Text(p.title, fontWeight = FontWeight.SemiBold)
         if (p.description.isNotBlank()) Text(p.description, color = Palette.Text2, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         if (p.isNow) LinearProgressIndicator(progress = { p.progress }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+        val canRecord = !adminHidden()
         Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             when {
                 p.isNow -> {
                     NButton(L.t("مشاهدة", "Watch"), Icons.Filled.PlayArrow) { vm.play(ctx, ch) }
-                    NButton(L.t("تسجيل حتى النهاية", "Record to end"), Icons.Filled.FiberManualRecord) {
+                    if (canRecord) NButton(L.t("تسجيل حتى النهاية", "Record to end"), Icons.Filled.FiberManualRecord) {
                         vm.recordNow(ch, (((p.end - System.currentTimeMillis()) / 60000).toInt() + 3).coerceAtLeast(5))
                     }
                     if (ch.catchupDays > 0) NButton(L.t("من البداية", "From start"), Icons.Filled.History) { vm.playCatchup(ctx, ch, p) }
                 }
                 p.isPast -> if (ch.catchupDays > 0) NButton(L.t("مشاهدة الإعادة", "Watch catch-up"), Icons.Filled.History) { vm.playCatchup(ctx, ch, p) }
-                else -> NButton(L.t("جدولة تسجيل", "Schedule recording"), Icons.Filled.Schedule) { vm.scheduleRecording(ch, p) }
+                else -> if (canRecord) NButton(L.t("جدولة تسجيل", "Schedule recording"), Icons.Filled.Schedule) { vm.scheduleRecording(ch, p) }
             }
         }
     }
@@ -621,7 +661,7 @@ private fun ProgramRow(vm: MainViewModel, ch: MediaEntry, p: EpgProgram) {
 private fun EntryRow(vm: MainViewModel, e: MediaEntry, list: List<MediaEntry>) {
     val ctx = LocalContext.current
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp).tvClick(onLongClick = { vm.toggleFav(e) }) {
+        Modifier.fillMaxWidth().padding(vertical = 2.dp).tvClick(onLongClick = { vm.itemMenu = e }) {
             when (e.kind) {
                 ContentKind.LIVE -> vm.play(ctx, e, list.filter { it.kind == ContentKind.LIVE })
                 ContentKind.VOD -> vm.vodDialog = e
@@ -790,8 +830,13 @@ private fun AccountSection(vm: MainViewModel) {
     val p = vm.activeProfile
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         SectionTitle(L.t("معلومات الاشتراك", "Subscription info"))
-        vm.account?.fields?.forEach { (k, v) -> InfoRow(k, v) }
-        if (p != null && p.mac.isNotBlank()) {
+        val hide = adminHidden()
+        vm.account?.fields?.filter { !(hide && it.first == "MAC") }?.forEach { (k, v) -> InfoRow(k, v) }
+        if (hide) {
+            SectionTitle(L.t("بيانات الجهاز", "This device"))
+            InfoRow(L.t("MAC الجهاز", "Device MAC"), remember { DeviceIdentity.realDeviceMac() })
+            InfoRow(L.t("الطراز", "Model"), android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL)
+        } else if (p != null && p.mac.isNotBlank()) {
             SectionTitle(L.t("بيانات الجهاز المرسلة", "Device identity sent"))
             InfoRow("MAC", p.mac)
             InfoRow("Serial", p.serial)
@@ -803,7 +848,7 @@ private fun AccountSection(vm: MainViewModel) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NButton(L.t("اختبار الاتصال", "Test connection"), Icons.Filled.NetworkCheck, primary = true) { vm.testConnection() }
             NButton(L.t("تحديث القوائم", "Reload lists"), Icons.Filled.Refresh) { vm.refresh() }
-            if (p != null) NButton(L.t("تعديل الاشتراك", "Edit subscription"), Icons.Filled.Edit) { vm.push(Screen.Edit(p)) }
+            if (p != null && !hide) NButton(L.t("تعديل الاشتراك", "Edit subscription"), Icons.Filled.Edit) { vm.push(Screen.Edit(p)) }
             NButton(L.t("تسجيل الخروج", "Log out"), Icons.Filled.Logout, danger = true) { vm.logout() }
         }
     }
