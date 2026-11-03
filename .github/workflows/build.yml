@@ -27,11 +27,21 @@ jobs:
         with:
           name: NewLifeTV-apk
           path: NewLifeTV-*.apk
-      - name: Publish update (used by the in-app updater)
+      - name: Publish release here
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: NEW LIFE TV 1.0.${{ github.run_number }}
           body: Build ${{ github.run_number }} — ${{ github.event.head_commit.message }}
+          files: NewLifeTV-1.0.${{ github.run_number }}.apk
+          make_latest: true
+      - name: Publish update for the app
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: abds7443/NEW-LIFE-TV-Updates
+          token: ${{ secrets.RELEASES_TOKEN }}
+          tag_name: v${{ github.run_number }}
+          name: NEW LIFE TV 1.0.${{ github.run_number }}
+          body: Build ${{ github.run_number }}
           files: NewLifeTV-1.0.${{ github.run_number }}.apk
           make_latest: true
