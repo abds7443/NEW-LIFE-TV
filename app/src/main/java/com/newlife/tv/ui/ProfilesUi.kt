@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Close
@@ -93,10 +94,15 @@ fun BackupButtons(vm: MainViewModel) {
     NButton(L.t("استعادة", "Restore"), Icons.Filled.Restore) { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun ProfilesScreen(vm: MainViewModel) {
     val profiles by ProfileStore.profiles.collectAsState()
     var confirmDelete by remember { mutableStateOf<Profile?>(null) }
+    var showFree by remember { mutableStateOf(false) }
+    val hide = adminHidden()
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(20_000); now = System.currentTimeMillis() } }
 
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -107,12 +113,23 @@ fun ProfilesScreen(vm: MainViewModel) {
                 }
                 Text(L.t("اشتراكاتك — اختر اشتراكاً لتسجيل الدخول", "Your subscriptions — pick one to log in"), color = Palette.Text2)
             }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(L.hm(now), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Text2)
+                Text(L.fullDate(now), fontSize = 12.sp, color = Palette.Text2)
+            }
         }
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NButton(L.t("إضافة اشتراك", "Add subscription"), Icons.Filled.Add, primary = true) { vm.push(Screen.Edit(null)) }
-            BackupButtons(vm)
+        // Buttons wrap onto several lines so every one is visible on phones in portrait.
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!hide) NButton(L.t("إضافة اشتراك", "Add subscription"), Icons.Filled.Add, primary = true) { vm.push(Screen.Edit(null)) }
+            NButton(L.t("باقات مجانية", "Free packages"), Icons.Filled.Add) { showFree = true }
+            if (!hide) BackupButtons(vm)
             NButton(L.t("الإعدادات", "Settings"), Icons.Filled.Settings) { vm.push(Screen.Settings) }
+            NButton(if (hide) L.t("إظهار قوائم التعديل", "Show edit menus") else L.t("إخفاء قوائم التعديل", "Hide edit menus"),
+                Icons.Filled.AdminPanelSettings) { vm.toggleAdminMode() }
             NButton(if (L.arabic) "English" else "العربية") { ProfileStore.updateSettings { it.copy(arabic = !it.arabic) } }
         }
         Spacer(Modifier.height(12.dp))
@@ -142,7 +159,10 @@ fun ProfilesScreen(vm: MainViewModel) {
                         color = Palette.Text2,
                     )
                     Spacer(Modifier.height(12.dp))
-                    NButton(L.t("إضافة اشتراك", "Add subscription"), Icons.Filled.Add, primary = true) { vm.push(Screen.Edit(null)) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!hide) NButton(L.t("إضافة اشتراك", "Add subscription"), Icons.Filled.Add, primary = true) { vm.push(Screen.Edit(null)) }
+                        NButton(L.t("باقات مجانية", "Free packages"), Icons.Filled.Add) { showFree = true }
+                    }
                 }
             }
         } else {
@@ -153,6 +173,8 @@ fun ProfilesScreen(vm: MainViewModel) {
             }
         }
     }
+
+    if (showFree) FreePackagesDialog(vm) { showFree = false }
 
     confirmDelete?.let { p ->
         AlertDialog(
@@ -167,6 +189,7 @@ fun ProfilesScreen(vm: MainViewModel) {
 
 @Composable
 private fun ProfileCard(p: Profile, vm: MainViewModel, onDelete: () -> Unit) {
+    val hideId = adminHidden()
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.Surface).padding(14.dp)
     ) {
@@ -177,7 +200,7 @@ private fun ProfileCard(p: Profile, vm: MainViewModel, onDelete: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         Text(p.portalUrl, color = Palette.Text2, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         val detail = when (p.type) {
-            ProfileType.STALKER -> "MAC: ${p.mac}" + if (p.username.isNotBlank()) "  •  ${p.username}" else ""
+            ProfileType.STALKER -> if (hideId) "" else "MAC: ${p.mac}" + if (p.username.isNotBlank()) "  •  ${p.username}" else ""
             ProfileType.XTREAM -> L.t("المستخدم: ", "User: ") + p.username
             ProfileType.M3U -> if (p.epgUrl.isNotBlank()) "EPG ✓" else ""
         }
@@ -185,11 +208,13 @@ private fun ProfileCard(p: Profile, vm: MainViewModel, onDelete: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             NButton(L.t("تسجيل الدخول", "Log in"), Icons.Filled.Login, primary = true, enabled = !vm.connecting) { vm.connect(p) }
-            NButton(L.t("تعديل", "Edit"), Icons.Filled.Edit) { vm.push(Screen.Edit(p)) }
-            NButton(L.t("نسخ", "Duplicate"), Icons.Filled.ContentCopy) {
-                ProfileStore.saveProfile(p.copy(id = java.util.UUID.randomUUID().toString(), nickname = p.displayName() + " (2)", lastUsed = 0))
+            if (!hideId) {
+                NButton(L.t("تعديل", "Edit"), Icons.Filled.Edit) { vm.push(Screen.Edit(p)) }
+                NButton(L.t("نسخ", "Duplicate"), Icons.Filled.ContentCopy) {
+                    ProfileStore.saveProfile(p.copy(id = java.util.UUID.randomUUID().toString(), nickname = p.displayName() + " (2)", lastUsed = 0))
+                }
+                NButton(L.t("حذف", "Delete"), Icons.Filled.Delete, danger = true) { onDelete() }
             }
-            NButton(L.t("حذف", "Delete"), Icons.Filled.Delete, danger = true) { onDelete() }
         }
     }
 }
