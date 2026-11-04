@@ -121,6 +121,8 @@ data class AppSettings(
     val adminHidden: Boolean = false,
     /** What to do with channels found dead by the channel check: "mark" (✅/❌) or "hide". */
     val deadChannelMode: String = "mark",
+    /** Small clock + date always visible on top of the video. */
+    val playerClock: Boolean = true,
     // ---- VPN (WireGuard) ----
     val vpnConfigs: List<VpnConfig> = emptyList(),
     val vpnSelected: String = "",

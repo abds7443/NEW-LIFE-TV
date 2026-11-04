@@ -169,14 +169,32 @@ fun HomeScreen(vm: MainViewModel) {
 
         // ---------------- content ----------------
         Column(Modifier.weight(1f).fillMaxHeight()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(sectionLabel(vm.section), fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                val expiry = vm.account?.fields?.firstOrNull { it.first == L.t("تاريخ الانتهاء", "Expiry") }?.second
-                if (expiry != null) Badge(L.t("ينتهي: ", "Expires: ") + expiry, Palette.Gold)
-                Spacer(Modifier.width(12.dp))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(L.hm(now), fontSize = 20.sp, color = Palette.Text2, fontWeight = FontWeight.Bold)
-                    Text(L.fullDate(now), fontSize = 11.sp, color = Palette.Text2)
+            val expiry = vm.account?.fields?.firstOrNull { it.first == L.t("تاريخ الانتهاء", "Expiry") }?.second
+                ?.substringBefore(' ')
+            if (railCompact) {
+                // narrow screens (phone portrait): two short lines instead of a tall squeezed column
+                Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(sectionLabel(vm.section), fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(L.hm(now), fontSize = 18.sp, color = Palette.Text2, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(L.fullDate(now), fontSize = 11.sp, color = Palette.Text2, maxLines = 1, softWrap = false,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        if (expiry != null) Text(L.t("ينتهي ", "Exp. ") + expiry, fontSize = 11.sp, color = Palette.Gold, maxLines = 1, softWrap = false)
+                    }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(sectionLabel(vm.section), fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (expiry != null) Badge(L.t("ينتهي: ", "Expires: ") + expiry, Palette.Gold)
+                    Spacer(Modifier.width(12.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(L.hm(now), fontSize = 20.sp, color = Palette.Text2, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                        Text(L.fullDate(now), fontSize = 11.sp, color = Palette.Text2, maxLines = 1, softWrap = false)
+                    }
                 }
             }
             if (vm.loading || vm.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -324,11 +342,12 @@ private fun LiveSection(vm: MainViewModel) {
                                 .padding(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(if (e.number > 0) "${e.number}" else "${i + 1}", color = Palette.Text2, fontSize = 13.sp, modifier = Modifier.width(44.dp))
-                            Logo(e.logo, 44.dp)
-                            Spacer(Modifier.width(10.dp))
+                            Text(if (e.number > 0) "${e.number}" else "${i + 1}", color = Palette.Text2, fontSize = 12.sp,
+                                maxLines = 1, softWrap = false, modifier = Modifier.width(if (wide) 44.dp else 30.dp))
+                            Logo(e.logo, if (wide) 44.dp else 38.dp)
+                            Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                                Text(e.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium, fontSize = 15.sp)
                                 if (nowProg != null) Text(nowProg.title, color = Palette.Text2, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             if (e.catchupDays > 0) Icon(Icons.Filled.History, null, tint = Palette.Text2, modifier = Modifier.size(16.dp))
@@ -377,7 +396,12 @@ private fun ChannelCheckBar(vm: MainViewModel, list: List<MediaEntry>) {
 @Composable
 private fun QuickSearch(q: String, total: Int, shown: Int, onChange: (String) -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Field(L.t("🔍 بحث عن قناة في هذه المجموعة", "🔍 Search in this group"), q, Modifier.weight(1f)) { onChange(it) }
+        androidx.compose.material3.OutlinedTextField(
+            value = q, onValueChange = onChange, singleLine = true,
+            placeholder = { Text(L.t("🔍 بحث في المجموعة", "🔍 Search group"), maxLines = 1, color = Palette.Text2, fontSize = 14.sp) },
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = Color.White),
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp).focusRing(RoundedCornerShape(6.dp)),
+        )
         Spacer(Modifier.width(8.dp))
         Text(if (q.isBlank()) "$total" else "$shown / $total", color = Palette.Text2, fontSize = 12.sp)
     }
@@ -702,7 +726,7 @@ private fun EntryRow(vm: MainViewModel, e: MediaEntry, list: List<MediaEntry>) {
             ContentKind.LIVE -> Icons.Filled.LiveTv; ContentKind.VOD -> Icons.Filled.Movie; ContentKind.SERIES -> Icons.Filled.VideoLibrary
         })
         Spacer(Modifier.width(10.dp))
-        Text(e.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(e.title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
         Badge(when (e.kind) {
             ContentKind.LIVE -> L.t("قناة", "Live"); ContentKind.VOD -> L.t("فيلم", "Movie"); ContentKind.SERIES -> L.t("مسلسل", "Series")
         })

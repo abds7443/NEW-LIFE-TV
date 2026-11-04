@@ -152,6 +152,8 @@ class PlayerActivity : ComponentActivity() {
     private var hideZapJob: Job? = null
     private var errorDialog: AlertDialog? = null
     private lateinit var osd: TextView
+    private lateinit var clock: TextView
+    private var clockJob: Job? = null
     private var osdJob: Job? = null
     private var zoom = 1f
     private var swipeAcc = 0f
@@ -277,8 +279,15 @@ class PlayerActivity : ComponentActivity() {
             setBackgroundColor(0xB3000000.toInt()); setPadding(dp(24), dp(12), dp(24), dp(12)); visibility = View.GONE
         }
         root.addView(osd, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        clock = TextView(this).apply {
+            setTextColor(0xE6FFFFFF.toInt()); textSize = 13f; setTypeface(typeface, Typeface.BOLD)
+            setBackgroundColor(0x66000000); setPadding(dp(10), dp(4), dp(10), dp(4))
+            visibility = if (ProfileStore.settings.value.playerClock) View.VISIBLE else View.GONE
+        }
+        root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin = dp(8); marginEnd = dp(8) })
         volumeControlStream = AudioManager.STREAM_MUSIC
         setContentView(root)
+        startClock()
     }
 
     private fun handleIntent(intent: Intent) {
@@ -600,6 +609,20 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /** Always-visible clock + date (hidden under the controls bar and in PiP). */
+    private fun startClock() {
+        clockJob?.cancel()
+        if (!ProfileStore.settings.value.playerClock) return
+        clockJob = lifecycleScope.launch {
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                clock.text = L.hm(now) + "  •  " + L.day(now)
+                clock.visibility = if (overlay.visibility == View.VISIBLE || inPip()) View.GONE else View.VISIBLE
+                delay(1000)
+            }
+        }
     }
 
     // ------------------------------------------------------------------ volume / brightness / zoom

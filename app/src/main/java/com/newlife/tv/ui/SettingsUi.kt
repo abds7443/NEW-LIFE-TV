@@ -78,6 +78,7 @@ fun SettingsContent(vm: MainViewModel) {
             s.externalPackage,
         ) { v -> update { it.copy(externalPackage = v) } }
         ChoiceRow(L.t("صورة في صورة تلقائياً عند الخروج", "Auto picture-in-picture on Home"), yesNo, s.autoPip) { v -> update { it.copy(autoPip = v) } }
+        ChoiceRow(L.t("إظهار الساعة والتاريخ أثناء المشاهدة", "Show clock & date while watching"), yesNo, s.playerClock) { v -> update { it.copy(playerClock = v) } }
         ChoiceRow(L.t("حجم التخزين المؤقت (ثانية)", "Buffer size (seconds)"), listOf(3, 8, 15, 30, 60).map { it to "$it" }, s.bufferSeconds) { v -> update { it.copy(bufferSeconds = v) } }
         ChoiceRow(
             L.t("أبعاد الصورة الافتراضية", "Default aspect"),
