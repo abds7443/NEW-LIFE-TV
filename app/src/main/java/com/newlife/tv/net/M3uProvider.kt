@@ -33,7 +33,7 @@ class M3uProvider(private val ctx: Context, override val profile: Profile) : Ipt
                 ?: throw IOException("Cannot open file")
             src.startsWith("file://") -> File(Uri.parse(src).path ?: "").readText()
             src.startsWith("/") -> File(src).readText()
-            else -> Http.getString(if (src.startsWith("http")) src else "http://$src", mapOf("User-Agent" to playerUa))
+            else -> loadWithMirrors(if (src.startsWith("http")) src else "http://$src")
         }
         val parsed = M3uParser.parse(text)
         if (parsed.entries.isEmpty()) throw IOException(L.t("قائمة التشغيل فارغة أو غير صالحة", "Playlist is empty or invalid"))
@@ -47,6 +47,37 @@ class M3uProvider(private val ctx: Context, override val profile: Profile) : Ipt
             L.t("المسلسلات", "Series") to items.count { it.kind == ContentKind.SERIES }.toString(),
             L.t("دليل البرامج", "EPG") to tvgUrl.ifBlank { L.t("غير متوفر", "None") },
         ))
+    }
+
+    /**
+     * Some providers block github.io / raw.githubusercontent.com ("Connection reset").
+     * The same public playlists are mirrored, so try the mirrors before giving up.
+     */
+    private fun loadWithMirrors(url: String): String {
+        val candidates = mutableListOf(url)
+        val ghPages = Regex("^https?://iptv-org\\.github\\.io/iptv/(.+)$").find(url)
+        if (ghPages != null) {
+            val path = ghPages.groupValues[1]
+            candidates += "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/$path"
+            candidates += "https://cdn.jsdelivr.net/gh/iptv-org/iptv@gh-pages/$path"
+        }
+        val raw = Regex("^https?://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$").find(url)
+        if (raw != null) {
+            val (owner, repo, branch, path) = raw.destructured
+            candidates += "https://cdn.jsdelivr.net/gh/$owner/$repo@$branch/$path"
+            if (owner == "iptv-org" && repo == "iptv") candidates += "https://iptv-org.github.io/iptv/$path"
+        }
+        var last: Exception? = null
+        for (u in candidates.distinct()) {
+            try {
+                val text = Http.getString(u, mapOf("User-Agent" to playerUa))
+                if (text.contains("#EXTINF") || text.contains("#EXTM3U")) return text
+            } catch (e: Exception) { last = e }
+        }
+        throw IOException(
+            L.t("تعذر تحميل القائمة (قد يكون الموقع محجوباً من مزود الإنترنت): ",
+                "Could not load the playlist (the site may be blocked by your provider): ") + (last?.message ?: "")
+        )
     }
 
     override suspend fun categories(kind: ContentKind): List<Category> {
