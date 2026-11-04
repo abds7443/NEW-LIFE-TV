@@ -356,15 +356,15 @@ fun LockScreen(vm: MainViewModel) {
 
 /** Public, legal playlists maintained by the iptv-org / Free-TV communities. */
 val FREE_PACKAGES = listOf(
-    Triple("🌍", "iptv-org — " + "All channels / كل القنوات", "https://iptv-org.github.io/iptv/index.m3u"),
-    Triple("🗺", "iptv-org — By country / حسب الدولة", "https://iptv-org.github.io/iptv/index.country.m3u"),
-    Triple("🎬", "iptv-org — By category / حسب التصنيف", "https://iptv-org.github.io/iptv/index.category.m3u"),
-    Triple("🗣", "iptv-org — By language / حسب اللغة", "https://iptv-org.github.io/iptv/index.language.m3u"),
-    Triple("🇸🇦", "Arabic channels / القنوات العربية", "https://iptv-org.github.io/iptv/languages/ara.m3u"),
-    Triple("🇦🇪", "UAE / الإمارات", "https://iptv-org.github.io/iptv/countries/ae.m3u"),
-    Triple("🇸🇦", "Saudi Arabia / السعودية", "https://iptv-org.github.io/iptv/countries/sa.m3u"),
-    Triple("🇪🇬", "Egypt / مصر", "https://iptv-org.github.io/iptv/countries/eg.m3u"),
-    Triple("🇰🇼", "Kuwait / الكويت", "https://iptv-org.github.io/iptv/countries/kw.m3u"),
+    Triple("🌍", "iptv-org — " + "All channels / كل القنوات", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/index.m3u"),
+    Triple("🗺", "iptv-org — By country / حسب الدولة", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/index.country.m3u"),
+    Triple("🎬", "iptv-org — By category / حسب التصنيف", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/index.category.m3u"),
+    Triple("🗣", "iptv-org — By language / حسب اللغة", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/index.language.m3u"),
+    Triple("🇸🇦", "Arabic channels / القنوات العربية", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/languages/ara.m3u"),
+    Triple("🇦🇪", "UAE / الإمارات", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/countries/ae.m3u"),
+    Triple("🇸🇦", "Saudi Arabia / السعودية", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/countries/sa.m3u"),
+    Triple("🇪🇬", "Egypt / مصر", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/countries/eg.m3u"),
+    Triple("🇰🇼", "Kuwait / الكويت", "https://raw.githubusercontent.com/iptv-org/iptv/gh-pages/countries/kw.m3u"),
     Triple("📺", "Free-TV (quality list)", "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8"),
 )
 
