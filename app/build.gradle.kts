@@ -1,0 +1,90 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.newlife.tv"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.newlife.tv"
+        minSdk = 21
+        targetSdk = 34
+        // Each GitHub build gets a higher number, so the app can update itself.
+        val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = build
+        versionName = "1.0.$build"
+        vectorDrawables.useSupportLibrary = true
+        // TV boxes, phones and tablets are ARM; this keeps the APK size reasonable with the VLC engine.
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+    }
+
+    // Fixed signing key: every build has the same signature, so new versions install over the old one.
+    signingConfigs {
+        create("newlife") {
+            storeFile = file("newlife.jks")
+            storePassword = "newlife2026"
+            keyAlias = "newlife"
+            keyPassword = "newlife2026"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("newlife")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("newlife")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
+}
+
+dependencies {
+    val media3 = "1.4.1"
+    val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.fragment:fragment-ktx:1.8.4")
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    implementation("androidx.media3:media3-exoplayer:$media3")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3")
+    implementation("androidx.media3:media3-exoplayer-dash:$media3")
+    implementation("androidx.media3:media3-exoplayer-smoothstreaming:$media3")
+    implementation("androidx.media3:media3-exoplayer-rtsp:$media3")
+    implementation("androidx.media3:media3-datasource-okhttp:$media3")
+    implementation("androidx.media3:media3-datasource-rtmp:$media3")
+    implementation("androidx.media3:media3-ui:$media3")
+
+    // VLC engine: plays almost every IPTV format/codec (TS, HLS, RTSP, RTMP, UDP, AC3/E-AC3 audio...)
+    implementation("org.videolan.android:libvlc-all:3.5.1")
+
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+}
