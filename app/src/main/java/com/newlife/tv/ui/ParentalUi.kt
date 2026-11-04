@@ -143,7 +143,7 @@ fun PinDialog(vm: MainViewModel) {
         text = {
             Column {
                 Text(
-                    if (req.admin) L.t("أدخل الرقم السري للإدارة", "Enter the admin PIN")
+                    if (req.admin) L.t("أدخل الرمز", "Enter the code")
                     else L.t("أدخل الرقم السري للرقابة الأبوية", "Enter the parental PIN"),
                     color = Palette.Text2,
                 )

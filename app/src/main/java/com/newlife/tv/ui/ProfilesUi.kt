@@ -128,8 +128,7 @@ fun ProfilesScreen(vm: MainViewModel) {
             NButton(L.t("باقات مجانية", "Free packages"), Icons.Filled.Add) { showFree = true }
             if (!hide) BackupButtons(vm)
             NButton(L.t("الإعدادات", "Settings"), Icons.Filled.Settings) { vm.push(Screen.Settings) }
-            NButton(if (hide) L.t("إظهار قوائم التعديل", "Show edit menus") else L.t("إخفاء قوائم التعديل", "Hide edit menus"),
-                Icons.Filled.AdminPanelSettings) { vm.toggleAdminMode() }
+            NButton(if (hide) "B" else "A", Icons.Filled.AdminPanelSettings) { vm.toggleAdminMode() }
             NButton(if (L.arabic) "English" else "العربية") { ProfileStore.updateSettings { it.copy(arabic = !it.arabic) } }
         }
         Spacer(Modifier.height(12.dp))

@@ -183,4 +183,25 @@ object StreamProbe {
         }
         null
     }
+
+    /** Fast "does this stream answer with video data?" check used by the channel scanner. */
+    suspend fun isAlive(r: PlayRequest): Boolean = withContext(Dispatchers.IO) {
+        if (!r.url.startsWith("http")) return@withContext true
+        val headers = r.headers + ("User-Agent" to r.userAgent.ifBlank { DeviceIdentity.DEFAULT_PLAYER_UA })
+        runCatching {
+            quick.newCall(Http.request(r.url, headers)).execute().use { resp ->
+                if (!resp.isSuccessful) return@use false
+                val ct = (resp.header("Content-Type") ?: "").lowercase()
+                val buf = ByteArray(512)
+                val n = resp.body?.byteStream()?.read(buf) ?: -1
+                if (n <= 0) return@use false
+                val head = String(buf, 0, n, Charsets.ISO_8859_1)
+                !(ct.contains("text/html") || head.contains("<html", true))
+            }
+        }.getOrDefault(false)
+    }
+
+    private val quick by lazy {
+        Http.client.newBuilder().connectTimeout(6, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build()
+    }
 }

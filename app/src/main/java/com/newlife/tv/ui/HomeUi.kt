@@ -164,8 +164,7 @@ fun HomeScreen(vm: MainViewModel) {
             Spacer(Modifier.height(10.dp))
             RailItem(Icons.Filled.Refresh, L.t("تحديث", "Refresh"), false) { vm.refresh() }
             RailItem(Icons.Filled.Logout, L.t("تبديل / خروج", "Switch / log out"), false) { vm.logout() }
-            RailItem(Icons.Filled.AdminPanelSettings,
-                if (hideAdmin) L.t("إظهار قوائم التعديل", "Show edit menus") else L.t("إخفاء قوائم التعديل", "Hide edit menus"), false) { vm.toggleAdminMode() }
+            RailItem(Icons.Filled.AdminPanelSettings, if (hideAdmin) "B" else "A", false) { vm.toggleAdminMode() }
         }
 
         // ---------------- content ----------------
@@ -311,6 +310,7 @@ private fun LiveSection(vm: MainViewModel) {
         Row(Modifier.fillMaxSize()) {
             Column(Modifier.weight(1f).fillMaxHeight()) {
             QuickSearch(q, all.size, list.size) { q = it }
+            ChannelCheckBar(vm, list)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (list.isEmpty() && !vm.loading) EmptyHint(L.t("لا توجد قنوات في هذه المجموعة", "No channels in this group"))
                 LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
@@ -334,6 +334,11 @@ private fun LiveSection(vm: MainViewModel) {
                             if (e.catchupDays > 0) Icon(Icons.Filled.History, null, tint = Palette.Text2, modifier = Modifier.size(16.dp))
                             if (vm.isFav(e)) Icon(Icons.Filled.Favorite, null, tint = Palette.Gold, modifier = Modifier.size(16.dp))
                             if (vm.isChLocked(e)) LockBadge()
+                            when (vm.healthOf(e)) {
+                                true -> Text("✅", fontSize = 14.sp)
+                                false -> Text("❌", fontSize = 14.sp)
+                                null -> Unit
+                            }
                             Icon(Icons.Filled.PlayArrow, null, tint = Palette.Text2, modifier = Modifier.size(20.dp))
                         }
                     }
@@ -342,6 +347,29 @@ private fun LiveSection(vm: MainViewModel) {
             }
             if (wide) ChannelPanel(vm, list)
         }
+    }
+}
+
+/** "Check channels" button with progress, and the choice between marking or hiding dead channels. */
+@Composable
+private fun ChannelCheckBar(vm: MainViewModel, list: List<MediaEntry>) {
+    val settings by ProfileStore.settings.collectAsState()
+    val progress = vm.checkProgress
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (progress == null) {
+            NButton(L.t("فحص القنوات", "Check channels"), Icons.Filled.NetworkCheck, enabled = list.isNotEmpty()) { vm.checkChannels(list) }
+        } else {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            Text("${progress.first} / ${progress.second}", color = Palette.Text2, fontSize = 13.sp)
+            NButton(L.t("إيقاف", "Stop"), Icons.Filled.Stop, danger = true) { vm.stopCheck() }
+        }
+        FilterChip(selected = settings.deadChannelMode == "mark", onClick = { vm.setDeadMode("mark") },
+            label = { Text(L.t("✅/❌ تمييز", "✅/❌ Mark")) }, modifier = Modifier.focusRing(RoundedCornerShape(8.dp)))
+        FilterChip(selected = settings.deadChannelMode == "hide", onClick = { vm.setDeadMode("hide") },
+            label = { Text(L.t("إخفاء المتوقفة", "Hide dead")) }, modifier = Modifier.focusRing(RoundedCornerShape(8.dp)))
     }
 }
 

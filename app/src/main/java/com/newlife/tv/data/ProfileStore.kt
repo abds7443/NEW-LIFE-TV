@@ -16,6 +16,8 @@ object ProfileStore {
     val settings = MutableStateFlow(AppSettings())
     val schedules = MutableStateFlow<List<ScheduledRecording>>(emptyList())
     val parental = MutableStateFlow(Parental())
+    /** Channel check results: channel key -> true (works) / false (dead). */
+    val health = MutableStateFlow<Map<String, Boolean>>(emptyMap())
 
     @Synchronized
     fun init(ctx: Context) {
@@ -26,6 +28,7 @@ object ProfileStore {
         settings.value = read("settings", object : TypeToken<AppSettings>() {}) ?: AppSettings()
         schedules.value = read("schedules", object : TypeToken<List<ScheduledRecording>>() {}) ?: emptyList()
         parental.value = read("parental", object : TypeToken<Parental>() {}) ?: Parental()
+        health.value = read("health", object : TypeToken<Map<String, Boolean>>() {}) ?: emptyMap()
         L.arabic = settings.value.arabic
     }
 
@@ -132,6 +135,16 @@ object ProfileStore {
         val p = parental.value
         parental.value = p.copy(hidden = if (hidden) (p.hidden + keys).distinct() else p.hidden - keys.toSet())
         write("parental", parental.value)
+    }
+
+    fun putHealth(results: Map<String, Boolean>) {
+        health.value = health.value + results
+        write("health", health.value)
+    }
+
+    fun clearHealth(keys: Collection<String>? = null) {
+        health.value = if (keys == null) emptyMap() else health.value - keys.toSet()
+        write("health", health.value)
     }
 
     fun clearLocks() {

@@ -41,6 +41,12 @@ class MainActivity : FragmentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         setContent { NewLifeTheme { AppRoot(vm) } }
+        // Auto-connect the VPN if the user enabled it and already allowed the VPN permission.
+        val st = ProfileStore.settings.value
+        if (savedInstanceState == null && st.vpnAutoConnect && st.vpnConfigs.isNotEmpty() &&
+            com.newlife.tv.net.VpnManager.permissionIntent(this) == null &&
+            com.newlife.tv.net.VpnManager.state.value != com.newlife.tv.net.VpnManager.State.ON
+        ) vm.vpnConnect()
     }
 }
 

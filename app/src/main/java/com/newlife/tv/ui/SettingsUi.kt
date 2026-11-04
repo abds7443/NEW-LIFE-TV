@@ -113,7 +113,19 @@ fun SettingsContent(vm: MainViewModel) {
         if (changePin) ChangePinDialog(vm) { changePin = false }
         if (hideDialog) HideCategoriesDialog(vm) { hideDialog = false }
 
+        // ---------------- channel check ----------------
+        SectionTitle(L.t("فحص القنوات", "Channel check"), Modifier.padding(top = 16.dp))
+        Text(L.t("زر \"فحص القنوات\" فوق قائمة القنوات يجرّب كل قنوات المجموعة. اختر ماذا يحدث للقنوات المتوقفة:",
+            "The \"Check channels\" button above the channel list tests every channel of the group. Choose what happens to dead channels:"),
+            color = Palette.Text2, fontSize = 12.sp)
+        ChoiceRow(L.t("القنوات المتوقفة", "Dead channels"),
+            listOf("mark" to L.t("تمييز ✅ / ❌", "Mark ✅ / ❌"), "hide" to L.t("إخفاء المتوقفة", "Hide dead ones")),
+            s.deadChannelMode) { v -> vm.setDeadMode(v) }
+        Row(Modifier.padding(vertical = 6.dp)) { NButton(L.t("مسح نتائج الفحص", "Clear check results")) { vm.clearHealth() } }
+
         if (!s.adminHidden) {
+        VpnSection(vm)
+
         SectionTitle(L.t("النسخ الاحتياطي", "Backup"), Modifier.padding(top = 16.dp))
         Text(L.t("احفظ كل الاشتراكات (مع MAC والبيانات) والمفضلة في ملف، واسترجعها على جهاز آخر.",
             "Save all subscriptions (incl. MAC & device data) and favorites to a file and restore them on another device."), color = Palette.Text2)

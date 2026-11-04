@@ -43,6 +43,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
@@ -82,6 +83,10 @@ dependencies {
 
     // VLC engine: plays almost every IPTV format/codec (TS, HLS, RTSP, RTMP, UDP, AC3/E-AC3 audio...)
     implementation("org.videolan.android:libvlc-all:3.5.1")
+
+    // WireGuard VPN client (user supplies the server configuration)
+    implementation("com.wireguard.android:tunnel:1.0.20230706")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")

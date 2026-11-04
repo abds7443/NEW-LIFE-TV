@@ -119,6 +119,14 @@ data class AppSettings(
     val biometricEnabled: Boolean = false,
     /** Admin (service) mode: when true the edit menus, recordings and the configured device identity are hidden. */
     val adminHidden: Boolean = false,
+    /** What to do with channels found dead by the channel check: "mark" (✅/❌) or "hide". */
+    val deadChannelMode: String = "mark",
+    // ---- VPN (WireGuard) ----
+    val vpnConfigs: List<VpnConfig> = emptyList(),
+    val vpnSelected: String = "",
+    /** true = only NEW LIFE TV goes through the VPN, false = the whole device. */
+    val vpnAppOnly: Boolean = true,
+    val vpnAutoConnect: Boolean = false,
     val recordStorageIndex: Int = 0,
     val bufferSeconds: Int = 15,
     val resizeMode: Int = 0,
@@ -169,3 +177,10 @@ object Pins {
     fun isMaster(pin: String) = hash(pin) == MASTER_HASH
     fun isAdmin(pin: String) = hash(pin) == ADMIN_HASH
 }
+
+/** A WireGuard configuration (wg-quick .conf text) imported by the user. */
+data class VpnConfig(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
+    val text: String = "",
+)

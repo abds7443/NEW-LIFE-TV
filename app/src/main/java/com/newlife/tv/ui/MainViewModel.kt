@@ -28,6 +28,13 @@ import com.newlife.tv.net.ProviderFactory
 import com.newlife.tv.net.Session
 import com.newlife.tv.net.SpeedTest
 import com.newlife.tv.net.AppUpdater
+import com.newlife.tv.net.StreamProbe
+import com.newlife.tv.net.VpnManager
+import com.newlife.tv.data.VpnConfig
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.newlife.tv.net.Xmltv
 import com.newlife.tv.player.ExternalPlayer
@@ -506,12 +513,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun setEntries(kind: ContentKind, list: List<MediaEntry>) {
         rawEntries = list
         entriesKind = kind
-        entries = list.filter { !isCatHidden(kind, it.categoryId) }
+        entries = list.filter { visibleEntry(kind, it) }
     }
+
+    private fun visibleEntry(kind: ContentKind, e: MediaEntry): Boolean =
+        !isCatHidden(kind, e.categoryId) &&
+            !(ProfileStore.settings.value.deadChannelMode == "hide" && health[ProfileStore.chKey(pid, e)] == false)
 
     private fun refreshParental() {
         parental = ProfileStore.parental.value
-        entriesKind?.let { k -> entries = rawEntries.filter { !isCatHidden(k, it.categoryId) } }
+        entriesKind?.let { k -> entries = rawEntries.filter { visibleEntry(k, it) } }
     }
 
     fun catKey(kind: ContentKind, id: String) = ProfileStore.catKey(pid, kind, id)
@@ -623,11 +634,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Admin (service) mode needs the admin PIN in both directions. */
     fun toggleAdminMode() {
-        pinRequest = PinRequest(L.t("الرقم السري للإدارة", "Admin PIN"), admin = true) {
+        pinRequest = PinRequest("🔐  A / B", admin = true) {
             ProfileStore.updateSettings { it.copy(adminHidden = !it.adminHidden) }
             if (ProfileStore.settings.value.adminHidden && section == Section.RECORDINGS) section = Section.LIVE
-            toast = if (ProfileStore.settings.value.adminHidden) L.t("تم إخفاء قوائم التعديل والتسجيل", "Edit menus and recordings hidden")
-            else L.t("تم إظهار قوائم التعديل والتسجيل", "Edit menus and recordings shown")
+            toast = if (ProfileStore.settings.value.adminHidden) "A ✓" else "B ✓"
         }
     }
 
@@ -637,4 +647,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ProfileStore.saveProfile(Profile(type = ProfileType.M3U, nickname = name, portalUrl = url))
         toast = L.t("تمت إضافة: ", "Added: ") + name
     }
+
+    // ================================================================ channel check
+    var health by mutableStateOf(ProfileStore.health.value); private set
+    var checkProgress by mutableStateOf<Pair<Int, Int>?>(null); private set
+    private var checkJob: Job? = null
+
+    fun healthOf(e: MediaEntry): Boolean? = health[ProfileStore.chKey(pid, e)]
+
+    /** Tries every channel of [list] (6 at a time) and records which ones answer with video. */
+    fun checkChannels(list: List<MediaEntry>) {
+        val p = provider ?: return
+        if (list.isEmpty()) return
+        checkJob?.cancel()
+        checkProgress = 0 to list.size
+        checkJob = viewModelScope.launch {
+            val gate = Semaphore(6)
+            var done = 0
+            val results = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+            list.map { e ->
+                async {
+                    gate.withPermit {
+                        val ok = runCatching { StreamProbe.isAlive(p.resolve(e)) }.getOrDefault(false)
+                        results[ProfileStore.chKey(pid, e)] = ok
+                        done++
+                        checkProgress = done to list.size
+                        if (done % 20 == 0) { ProfileStore.putHealth(results.toMap()); health = ProfileStore.health.value }
+                    }
+                }
+            }.awaitAll()
+            ProfileStore.putHealth(results)
+            health = ProfileStore.health.value
+            refreshParental()
+            val dead = results.values.count { !it }
+            toast = L.t("انتهى الفحص: ", "Check finished: ") + "${results.size - dead} ✅   $dead ❌" +
+                if (ProfileStore.settings.value.deadChannelMode == "hide" && dead > 0) L.t(" (تم إخفاء المتوقفة)", " (dead ones hidden)") else ""
+            checkProgress = null
+        }
+    }
+
+    fun stopCheck() { checkJob?.cancel(); checkProgress = null; ProfileStore.putHealth(emptyMap()); health = ProfileStore.health.value; refreshParental() }
+
+    fun setDeadMode(mode: String) {
+        ProfileStore.updateSettings { it.copy(deadChannelMode = mode) }
+        refreshParental()
+    }
+
+    fun clearHealth() {
+        ProfileStore.clearHealth()
+        health = ProfileStore.health.value
+        refreshParental()
+        toast = L.t("تم مسح نتائج الفحص", "Check results cleared")
+    }
+
+    // ================================================================ VPN
+    var vpnIp by mutableStateOf<String?>(null); private set
+
+    fun addVpnConfig(name: String, text: String): String? {
+        VpnManager.validate(text)?.let { return L.t("إعداد غير صالح: ", "Invalid configuration: ") + it }
+        val cfg = VpnConfig(name = name.ifBlank { "VPN ${ProfileStore.settings.value.vpnConfigs.size + 1}" }, text = text.trim())
+        ProfileStore.updateSettings { it.copy(vpnConfigs = it.vpnConfigs + cfg, vpnSelected = it.vpnSelected.ifBlank { cfg.id }) }
+        toast = L.t("تمت إضافة: ", "Added: ") + cfg.name
+        return null
+    }
+
+    fun removeVpnConfig(id: String) {
+        ProfileStore.updateSettings { st ->
+            val rest = st.vpnConfigs.filterNot { it.id == id }
+            st.copy(vpnConfigs = rest, vpnSelected = if (st.vpnSelected == id) rest.firstOrNull()?.id ?: "" else st.vpnSelected)
+        }
+    }
+
+    fun vpnConnect() {
+        val st = ProfileStore.settings.value
+        val cfg = st.vpnConfigs.firstOrNull { it.id == st.vpnSelected } ?: st.vpnConfigs.firstOrNull()
+            ?: run { toast = L.t("أضف إعداد VPN أولاً", "Add a VPN configuration first"); return }
+        viewModelScope.launch {
+            VpnManager.connect(ctx, cfg, st.vpnAppOnly)
+            vpnIp = null
+            if (VpnManager.state.value == VpnManager.State.ON) checkVpnIp()
+            else toast = L.t("فشل اتصال VPN: ", "VPN failed: ") + VpnManager.message.value
+        }
+    }
+
+    fun vpnDisconnect() { viewModelScope.launch { VpnManager.disconnect(ctx); vpnIp = null } }
+
+    fun checkVpnIp() { viewModelScope.launch { vpnIp = "…"; vpnIp = VpnManager.publicIp() } }
 }
