@@ -259,7 +259,8 @@ private fun BreathingGuide(t: Float, sleep: Boolean, modifier: Modifier) {
 
 // ============================================================================ scenes
 
-private fun DrawScope.sky(vararg c: Color) = drawRect(Brush.verticalGradient(c.toList()))
+private fun DrawScope.sky(c1: Color, c2: Color, c3: Color? = null) =
+    drawRect(Brush.verticalGradient(if (c3 == null) listOf(c1, c2) else listOf(c1, c2, c3)))
 
 private fun DrawScope.drawScene(scene: Scene, t: Float) {
     val w = size.width; val hgt = size.height
