@@ -43,6 +43,7 @@ object ProviderFactory {
         ProfileType.STALKER -> StalkerProvider(p)
         ProfileType.XTREAM -> XtreamProvider(p)
         ProfileType.M3U -> M3uProvider(ctx.applicationContext, p)
+        ProfileType.ARCHIVE -> ArchiveProvider(p)
     }
 }
 

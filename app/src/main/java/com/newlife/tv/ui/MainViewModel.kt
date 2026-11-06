@@ -52,6 +52,7 @@ sealed interface Screen {
     data object Home : Screen
     data class SeriesDetail(val entry: MediaEntry) : Screen
     data object Settings : Screen
+    data class Relax(val sleep: Boolean) : Screen
 }
 
 /** A pending action waiting for the parental PIN (or the admin PIN when [admin]). */
@@ -125,7 +126,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 resetContent()
                 favKeys = ProfileStore.favoriteKeys(profile.id)
                 stack.clear(); stack.add(Screen.Profiles); stack.add(Screen.Home)
-                selectSection(Section.LIVE)
+                selectSection(if (profile.type == ProfileType.ARCHIVE) Section.VOD else Section.LIVE)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -642,6 +643,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ================================================================ free packages
+    fun addArchivePackage() {
+        if (ProfileStore.profiles.value.any { it.type == ProfileType.ARCHIVE }) { toast = L.t("هذه الباقة مضافة مسبقاً", "Already added"); return }
+        ProfileStore.saveProfile(Profile(type = ProfileType.ARCHIVE, nickname = L.t("أفلام ومسلسلات مجانية", "Free movies & series"), portalUrl = "https://archive.org"))
+        toast = L.t("تمت إضافة: أفلام ومسلسلات مجانية", "Added: Free movies & series")
+    }
+
     fun addFreePackage(name: String, url: String) {
         if (ProfileStore.profiles.value.any { it.portalUrl == url }) { toast = L.t("هذه الباقة مضافة مسبقاً", "Already added"); return }
         ProfileStore.saveProfile(Profile(type = ProfileType.M3U, nickname = name, portalUrl = url))

@@ -71,6 +71,7 @@ fun AppRoot(vm: MainViewModel) {
                     Screen.Home -> HomeScreen(vm)
                     is Screen.SeriesDetail -> SeriesScreen(vm, s.entry)
                     Screen.Settings -> SettingsPage(vm)
+                    is Screen.Relax -> RelaxScreen(vm, s.sleep)
                 }
                 PinDialog(vm)
                 ItemMenuDialog(vm)

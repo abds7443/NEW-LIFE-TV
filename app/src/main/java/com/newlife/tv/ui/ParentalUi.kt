@@ -381,6 +381,17 @@ fun FreePackagesDialog(vm: MainViewModel, onClose: () -> Unit) {
                         "Public free channel lists maintained by the iptv-org and Free-TV communities. Some streams may go offline at the source."),
                     color = Palette.Text2, fontSize = 12.sp,
                 )
+                val hasArchive = profiles.any { it.type == com.newlife.tv.data.ProfileType.ARCHIVE }
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("🎞", fontSize = 20.sp, modifier = Modifier.width(34.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(L.t("أفلام ومسلسلات مجانية (Internet Archive)", "Free movies & series (Internet Archive)"), fontWeight = FontWeight.Bold)
+                        Text(L.t("آلاف الأفلام والمسلسلات القانونية (ملكية عامة)، تتحدث تلقائياً", "Thousands of legal public-domain films & series, always up to date"),
+                            color = Palette.Text2, fontSize = 11.sp)
+                    }
+                    if (hasArchive) Text("✓", color = Palette.Accent, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp))
+                    else NButton(L.t("إضافة", "Add")) { vm.addArchivePackage() }
+                }
                 LazyColumn(Modifier.heightIn(max = 400.dp).padding(top = 6.dp)) {
                     items(FREE_PACKAGES) { (icon, name, url) ->
                         val added = profiles.any { it.portalUrl == url }

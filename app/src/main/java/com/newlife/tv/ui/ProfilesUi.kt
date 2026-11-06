@@ -70,6 +70,7 @@ private fun typeLabel(t: ProfileType) = when (t) {
     ProfileType.STALKER -> L.t("بورتال MAG / Stalker", "MAG / Stalker portal")
     ProfileType.XTREAM -> "Xtream Codes"
     ProfileType.M3U -> L.t("قائمة M3U", "M3U playlist")
+    ProfileType.ARCHIVE -> L.t("أفلام ومسلسلات مجانية", "Free movies & series")
 }
 
 @Composable
@@ -128,6 +129,8 @@ fun ProfilesScreen(vm: MainViewModel) {
             NButton(L.t("باقات مجانية", "Free packages"), Icons.Filled.Add) { showFree = true }
             if (!hide) BackupButtons(vm)
             NButton(L.t("الإعدادات", "Settings"), Icons.Filled.Settings) { vm.push(Screen.Settings) }
+            NButton(L.t("🌿 استرخاء", "🌿 Relax")) { vm.push(Screen.Relax(sleep = false)) }
+            NButton(L.t("🌙 النوم العميق", "🌙 Deep sleep")) { vm.push(Screen.Relax(sleep = true)) }
             NButton(if (hide) "B" else "A", Icons.Filled.AdminPanelSettings) { vm.toggleAdminMode() }
             NButton(if (L.arabic) "English" else "العربية") { ProfileStore.updateSettings { it.copy(arabic = !it.arabic) } }
         }
@@ -202,6 +205,7 @@ private fun ProfileCard(p: Profile, vm: MainViewModel, onDelete: () -> Unit) {
             ProfileType.STALKER -> if (hideId) "" else "MAC: ${p.mac}" + if (p.username.isNotBlank()) "  •  ${p.username}" else ""
             ProfileType.XTREAM -> L.t("المستخدم: ", "User: ") + p.username
             ProfileType.M3U -> if (p.epgUrl.isNotBlank()) "EPG ✓" else ""
+            ProfileType.ARCHIVE -> "Internet Archive • " + L.t("ملكية عامة", "public domain")
         }
         if (detail.isNotBlank()) Text(detail, color = Palette.Text2, fontSize = 12.sp, maxLines = 1)
         Spacer(Modifier.height(10.dp))
@@ -252,7 +256,7 @@ fun ProfileEditor(vm: MainViewModel, initial: Profile?) {
 
         Text(L.t("نوع الاشتراك", "Subscription type"), color = Palette.Text2)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ProfileType.entries.forEach { t ->
+            ProfileType.entries.filter { it != ProfileType.ARCHIVE }.forEach { t ->
                 FilterChip(
                     selected = p.type == t,
                     onClick = {
@@ -334,6 +338,11 @@ fun ProfileEditor(vm: MainViewModel, initial: Profile?) {
                     }
                 }
             }
+            ProfileType.ARCHIVE -> Text(
+                L.t("هذا المصدر لا يحتاج إعدادات: أفلام ومسلسلات مجانية من Internet Archive.",
+                    "This source needs no settings: free movies & series from the Internet Archive."),
+                color = Palette.Text2,
+            )
             ProfileType.M3U -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Field(L.t("رابط قائمة M3U أو ملف", "M3U URL or file"), p.portalUrl, Modifier.weight(1f), keyboard = KeyboardType.Uri,

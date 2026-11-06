@@ -50,6 +50,8 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Spa
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
@@ -162,6 +164,8 @@ fun HomeScreen(vm: MainViewModel) {
                 RailItem(sectionIcon(s), sectionLabel(s), vm.section == s) { vm.selectSection(s) }
             }
             Spacer(Modifier.height(10.dp))
+            RailItem(Icons.Filled.Spa, L.t("استرخاء", "Relax"), false) { vm.push(Screen.Relax(sleep = false)) }
+            RailItem(Icons.Filled.Bedtime, L.t("النوم العميق", "Deep sleep"), false) { vm.push(Screen.Relax(sleep = true)) }
             RailItem(Icons.Filled.Refresh, L.t("تحديث", "Refresh"), false) { vm.refresh() }
             RailItem(Icons.Filled.Logout, L.t("تبديل / خروج", "Switch / log out"), false) { vm.logout() }
             RailItem(Icons.Filled.AdminPanelSettings, if (hideAdmin) "B" else "A", false) { vm.toggleAdminMode() }

@@ -3,7 +3,7 @@ package com.newlife.tv.data
 import java.util.TimeZone
 import java.util.UUID
 
-enum class ProfileType { STALKER, XTREAM, M3U }
+enum class ProfileType { STALKER, XTREAM, M3U, ARCHIVE }
 
 enum class ContentKind { LIVE, VOD, SERIES }
 
