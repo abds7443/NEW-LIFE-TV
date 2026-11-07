@@ -336,8 +336,9 @@ class PlayerActivity : ComponentActivity() {
         }
         startJob?.cancel()
         startJob = lifecycleScope.launch {
-            delay(START_TIMEOUT_MS)
-            if (!ready) onEngineError(L.t("لم تبدأ الصورة خلال 20 ثانية", "No picture after 20 seconds") + " (${e.name})", containerIssue = true)
+            val wait = if (isLive) START_TIMEOUT_MS else START_TIMEOUT_MS * 2
+            delay(wait)
+            if (!ready) onEngineError(L.t("لم تبدأ الصورة خلال ${wait / 1000} ثانية", "No picture after ${wait / 1000} seconds") + " (${e.name})", containerIssue = isLive)
         }
         nowProgram = ""
         updateInfo()
@@ -369,7 +370,7 @@ class PlayerActivity : ComponentActivity() {
         startJob?.cancel()
         val r = req ?: return
         spinner.visibility = View.GONE
-        if (engineKind == ENGINE_EXO && containerIssue && !forceHls && !r.url.contains("m3u8", true) && r.url.startsWith("http")) {
+        if (engineKind == ENGINE_EXO && containerIssue && isLive && !forceHls && !r.url.contains("m3u8", true) && r.url.startsWith("http")) {
             forceHls = true
             startPlayback(r, ENGINE_EXO)
             return
