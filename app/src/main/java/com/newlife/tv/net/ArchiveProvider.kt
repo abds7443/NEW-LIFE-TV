@@ -76,13 +76,14 @@ class ArchiveProvider(override val profile: Profile) : IptvProvider {
     private fun search(query: String, kind: ContentKind, catId: String): List<MediaEntry> {
         val out = ArrayList<MediaEntry>()
         for (page in 1..3) {
-            val url = "$API?q=" + enc("($query) AND mediatype:movies") +
-                "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=year&fl%5B%5D=description&fl%5B%5D=avg_rating" +
+            val url = "$API?q=" + enc("($query) AND mediatype:movies AND NOT $ADULT_QUERY") +
+                "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=year&fl%5B%5D=description&fl%5B%5D=avg_rating&fl%5B%5D=subject" +
                 "&sort%5B%5D=downloads+desc&rows=200&page=$page&output=json"
             val docs = parseJson(Http.getString(url, ua)).obj()?.get("response").obj()?.get("docs").arr() ?: break
             docs.forEach { el ->
                 val o = el.obj() ?: return@forEach
                 val id = o.s("identifier").ifBlank { return@forEach }
+                if (isAdult(first(o, "title") + " " + first(o, "description") + " " + o.s("subject"))) return@forEach
                 out += MediaEntry(
                     id = id,
                     title = first(o, "title").ifBlank { id },
@@ -114,20 +115,24 @@ class ArchiveProvider(override val profile: Profile) : IptvProvider {
         val js = parseJson(Http.getString("https://archive.org/metadata/$id", ua)).obj()
             ?: throw IOException(L.t("تعذر قراءة بيانات العنصر", "Could not read item data"))
         val files = js.get("files").arr()?.mapNotNull { it.obj() } ?: emptyList()
+        // Archive "derivative" MP4 files are re-encoded for web streaming (index at the start),
+        // so they start fast on every player; originals are often huge or in old codecs.
         fun score(f: JsonObject): Int {
             val name = f.s("name").lowercase(); val fmt = f.s("format").lowercase()
+            val derived = f.s("source") == "derivative"
+            val mp4 = name.endsWith(".mp4") || name.endsWith(".m4v")
             return when {
-                fmt.contains("h.264") && !name.contains("512kb") -> 0
-                fmt.contains("mpeg4") && !fmt.contains("512kb") -> 1
-                name.endsWith(".mp4") && !name.contains("512kb") -> 2
-                name.endsWith(".mp4") -> 3
-                name.endsWith(".mkv") || name.endsWith(".webm") -> 4
+                mp4 && derived && !name.contains("512kb") -> 0
+                mp4 && derived -> 1
+                mp4 && (fmt.contains("h.264") || fmt.contains("mpeg4")) -> 2
+                mp4 -> 3
+                name.endsWith(".webm") || name.endsWith(".mkv") -> 4
                 name.endsWith(".ogv") -> 5
-                name.endsWith(".avi") || name.endsWith(".mpg") || name.endsWith(".mpeg") -> 6
+                name.endsWith(".avi") || name.endsWith(".mpg") || name.endsWith(".mpeg") || name.endsWith(".mov") -> 6
                 else -> 99
             }
         }
-        val videos = files.filter { score(it) < 99 && it.s("source") != "metadata" }
+        val videos = files.filter { score(it) < 99 && it.s("source") != "metadata" && it.s("private") != "true" }
         // one entry per base name (an episode is often available in several formats)
         videos.groupBy { it.s("name").substringBeforeLast('.').removeSuffix("_512kb") }
             .map { (_, group) -> group.minByOrNull { score(it) }!! }
@@ -149,16 +154,33 @@ class ArchiveProvider(override val profile: Profile) : IptvProvider {
     override suspend fun resolve(entry: MediaEntry): PlayRequest = withContext(Dispatchers.IO) {
         val f = videoFiles(entry.id).firstOrNull()
             ?: throw IOException(L.t("لا يوجد ملف فيديو قابل للتشغيل في هذا العنصر", "No playable video file in this item"))
-        PlayRequest(fileUrl(entry.id, f.first), userAgent = ua.getValue("User-Agent"), title = entry.title)
+        PlayRequest(direct(fileUrl(entry.id, f.first)), userAgent = ua.getValue("User-Agent"), title = entry.title)
     }
 
-    override suspend fun resolveEpisode(series: MediaEntry, season: Season, episode: Episode): PlayRequest =
-        PlayRequest(fileUrl(series.id, episode.cmd), userAgent = ua.getValue("User-Agent"), title = "${series.title} - ${episode.title}")
+    /** archive.org/download redirects to the storage server: hand the final address to the player. */
+    private fun direct(url: String): String = runCatching {
+        Http.client.newCall(okhttp3.Request.Builder().url(url).head().header("User-Agent", ua.getValue("User-Agent")).build())
+            .execute().use { r -> if (r.isSuccessful) r.request.url.toString() else url }
+    }.getOrDefault(url)
+
+    override suspend fun resolveEpisode(series: MediaEntry, season: Season, episode: Episode): PlayRequest = withContext(Dispatchers.IO) {
+        PlayRequest(direct(fileUrl(series.id, episode.cmd)), userAgent = ua.getValue("User-Agent"), title = "${series.title} - ${episode.title}")
+    }
 
     override suspend fun epg(entry: MediaEntry): List<EpgProgram> = emptyList()
 
     companion object {
         private const val API = "https://archive.org/advancedsearch.php"
         private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+
+        /** Keeps adult material out of the lists (the archive hosts some under general collections). */
+        private const val ADULT_QUERY =
+            "(subject:(porn OR porno OR pornography OR erotic OR erotica OR xxx OR sex OR sexy OR nude OR nudity OR nudist OR adult OR stag OR burlesque OR striptease) " +
+            "OR title:(porn OR porno OR erotic OR erotica OR xxx OR sex OR sexy OR nude OR nudist OR stag OR striptease OR altersporno) " +
+            "OR collection:(adult OR erotica OR stag_films))"
+        private val ADULT_WORDS = Regex(
+            "porn|erotic|erotik|xxx|\\bsex|sexy|nude|nudis|nudity|naked|\\bstag\\b|striptease|strip tease|adults? only|burlesque|playboy|hentai|fetish",
+            RegexOption.IGNORE_CASE)
+        fun isAdult(text: String) = ADULT_WORDS.containsMatchIn(text)
     }
 }
