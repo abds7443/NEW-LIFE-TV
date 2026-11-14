@@ -53,6 +53,8 @@ object ProfileStore {
     fun deleteProfile(id: String) {
         profiles.value = profiles.value.filterNot { it.id == id }
         favorites.value = favorites.value.filterNot { it.profileId == id }
+        health.value = health.value.filterKeys { !it.startsWith("$id|") }
+        write("health", health.value)
         write("profiles", profiles.value)
         write("favorites", favorites.value)
     }
@@ -139,6 +141,12 @@ object ProfileStore {
 
     fun putHealth(results: Map<String, Boolean>) {
         health.value = health.value + results
+        write("health", health.value)
+    }
+
+    /** Forgets the check results of one server (its channels show again, unchecked). */
+    fun clearHealthFor(profileId: String) {
+        health.value = health.value.filterKeys { !it.startsWith("$profileId|") }
         write("health", health.value)
     }
 

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
@@ -204,6 +205,10 @@ fun ItemMenuDialog(vm: MainViewModel) {
         title = { Text(e.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         text = {
             Column {
+                if (e.kind == ContentKind.LIVE) {
+                    val mctx = androidx.compose.ui.platform.LocalContext.current
+                    MenuRow(Icons.Filled.GridView, L.t("فتح في الشاشات المتعددة", "Open in multi-view")) { close(); vm.addToMultiView(mctx, e) }
+                }
                 MenuRow(Icons.Filled.Favorite, if (vm.isFav(e)) L.t("إزالة من المفضلة", "Remove from favorites") else L.t("إضافة إلى المفضلة", "Add to favorites")) { vm.toggleFav(e); close() }
                 val chLocked = vm.parental.locked.contains(ProfileStore.chKey(vm.activeProfile?.id ?: "", e))
                 MenuRow(if (chLocked) Icons.Filled.LockOpen else Icons.Filled.Lock,

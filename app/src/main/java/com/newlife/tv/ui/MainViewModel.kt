@@ -25,6 +25,10 @@ import com.newlife.tv.data.ScheduledRecording
 import com.newlife.tv.data.Season
 import com.newlife.tv.net.IptvProvider
 import com.newlife.tv.net.ProviderFactory
+import com.newlife.tv.net.ProviderPool
+import com.newlife.tv.data.Favorite
+import com.newlife.tv.multi.MultiView
+import com.newlife.tv.multi.MultiViewActivity
 import com.newlife.tv.net.Session
 import com.newlife.tv.net.SpeedTest
 import com.newlife.tv.net.AppUpdater
@@ -120,6 +124,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val p = ProviderFactory.create(ctx, profile)
                 val info = p.connect()
                 Session.provider = p
+                ProviderPool.put(p)
                 activeProfile = profile
                 account = info
                 ProfileStore.touch(profile.id)
@@ -127,6 +132,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 favKeys = ProfileStore.favoriteKeys(profile.id)
                 stack.clear(); stack.add(Screen.Profiles); stack.add(Screen.Home)
                 selectSection(if (profile.type == ProfileType.ARCHIVE) Section.VOD else Section.LIVE)
+                afterConnect?.let { afterConnect = null; it() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -136,6 +142,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** Runs once after the next successful connection (used when a favourite belongs to another server). */
+    private var afterConnect: (() -> Unit)? = null
 
     fun cancelConnect() {
         connectJob?.cancel()
@@ -162,6 +171,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val prov = ProviderFactory.create(ctx, p)
                 account = prov.connect()
                 Session.provider = prov
+                ProviderPool.put(prov)
                 resetContent()
                 selectSection(keep)
                 toast = L.t("تم التحديث", "Refreshed")
@@ -284,6 +294,71 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return ProfileStore.favorites.value.filter { it.profileId == pid }.map { it.entry }
     }
 
+    /** Favourites of every server (servers that were deleted are skipped). */
+    fun allFavorites(): List<Favorite> = ProfileStore.favorites.value.filter { ProfileStore.profile(it.profileId) != null }
+
+    fun serverName(profileId: String): String = ProfileStore.profile(profileId)?.displayName() ?: "?"
+
+    fun removeFavorite(f: Favorite) {
+        ProfileStore.toggleFavorite(f.profileId, f.entry)
+        activeProfile?.let { favKeys = ProfileStore.favoriteKeys(it.id) }
+        toast = L.t("أزيلت من المفضلة", "Removed from favorites")
+    }
+
+    /**
+     * Plays a favourite from any server. Live channels get a zap list made of the live favourites
+     * of all servers, so up/down moves between servers automatically.
+     */
+    fun playFavorite(context: Context, f: Favorite, all: List<Favorite>) {
+        val e = f.entry
+        val key = needsPinFor(f.profileId, e)
+        if (key != null) { withUnlock(key, L.t("هذه القناة مقفلة", "This item is locked")) { playFavorite(context, f, all) }; return }
+        val sameServer = f.profileId == activeProfile?.id
+        if (e.kind == ContentKind.SERIES) {
+            if (sameServer) openSeries(e)
+            else ProfileStore.profile(f.profileId)?.let { prof -> afterConnect = { selectSection(Section.SERIES); openSeries(e) }; connect(prof) }
+            return
+        }
+        if (e.kind == ContentKind.VOD && sameServer) { vodDialog = e; return }
+        viewModelScope.launch {
+            try {
+                toast = L.t("جارٍ الفتح من: ", "Opening from: ") + serverName(f.profileId)
+                val req = ProviderPool.resolve(ctx, f.profileId, e)
+                val st = ProfileStore.settings.value
+                if (st.playerEngine == "external" || st.externalPlayer) { ExternalPlayer.open(context, req); return@launch }
+                if (e.kind == ContentKind.LIVE) {
+                    val lives = all.filter { it.entry.kind == ContentKind.LIVE && (needsPinFor(it.profileId, it.entry) == null || it == f) }
+                    Session.zapList = lives.map { it.entry }
+                    Session.zapOwners = lives.map { it.profileId }
+                    PlayerActivity.start(context, req, e, lives.indexOf(f), f.profileId)
+                } else {
+                    Session.zapList = emptyList(); Session.zapOwners = emptyList()
+                    PlayerActivity.start(context, req, e, -1, f.profileId)
+                }
+            } catch (ex: CancellationException) {
+                throw ex
+            } catch (ex: Exception) {
+                toast = L.t("تعذر التشغيل: ", "Cannot play: ") + serverName(f.profileId) + " — " + ex.message
+            }
+        }
+    }
+
+    // ================================================================ multi-view
+    /** Puts [e] (from server [profileId], default: the current one) in a multi-view window and opens it. */
+    fun addToMultiView(context: Context, e: MediaEntry, profileId: String? = activeProfile?.id) {
+        val pid = profileId ?: return
+        if (needsPinFor(pid, e) != null) { toast = L.t("القناة مقفلة", "This channel is locked"); return }
+        MultiView.add(Favorite(pid, e))
+        openMultiView(context)
+    }
+
+    fun openMultiView(context: Context) {
+        Session.multiSource = entries.filter { it.kind == ContentKind.LIVE && needsPin(it) == null }
+        MultiView.sourceOwner = activeProfile?.id
+        MultiView.allowed = { f -> needsPinFor(f.profileId, f.entry) == null }
+        MultiViewActivity.start(context)
+    }
+
     // ================================================================ search
     fun search() {
         val q = searchQuery.trim()
@@ -310,7 +385,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ExternalPlayer.open(context, req); return
         }
         Session.zapList = list.filter { needsPin(it) == null }
-        PlayerActivity.start(context, req, entry, if (entry == null) -1 else list.indexOf(entry))
+        Session.zapOwners = emptyList()
+        PlayerActivity.start(context, req, entry, if (entry == null) -1 else Session.zapList.indexOf(entry), activeProfile?.id)
     }
 
     fun play(context: Context, e: MediaEntry, list: List<MediaEntry> = listOf(e)) {
@@ -532,6 +608,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun isChLocked(e: MediaEntry) = parental.locked.contains(ProfileStore.chKey(pid, e)) || isCatLocked(e.kind, e.categoryId)
     fun visibleCategories(kind: ContentKind) = categories[kind].orEmpty().filter { !isCatHidden(kind, it.id) }
 
+    /** Same as [needsPin] for an item of any server. */
+    private fun needsPinFor(profileId: String, e: MediaEntry): String? {
+        val ck = ProfileStore.chKey(profileId, e)
+        val gk = ProfileStore.catKey(profileId, e.kind, e.categoryId)
+        return when {
+            parental.locked.contains(ck) && ck !in unlocked -> ck
+            parental.locked.contains(gk) && gk !in unlocked -> gk
+            else -> null
+        }
+    }
+
     /** Key that still needs the PIN before [e] can be opened, or null. */
     private fun needsPin(e: MediaEntry): String? {
         val ck = ProfileStore.chKey(pid, e)
@@ -638,7 +725,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pinRequest = PinRequest("🔐  A / B", admin = true) {
             ProfileStore.updateSettings { it.copy(adminHidden = !it.adminHidden) }
             if (ProfileStore.settings.value.adminHidden && section == Section.RECORDINGS) section = Section.LIVE
-            toast = if (ProfileStore.settings.value.adminHidden) "A ✓" else "B ✓"
+            toast = if (ProfileStore.settings.value.adminHidden) "B ✓" else "A ✓"
         }
     }
 
@@ -663,9 +750,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun healthOf(e: MediaEntry): Boolean? = health[ProfileStore.chKey(pid, e)]
 
     /** Tries every channel of [list] (6 at a time) and records which ones answer with video. */
-    fun checkChannels(list: List<MediaEntry>) {
+    fun checkChannels(all: List<MediaEntry>) {
         val p = provider ?: return
-        if (list.isEmpty()) return
+        if (all.isEmpty()) return
+        // results are kept on the device: only channels never checked are tested
+        val list = all.filter { health[ProfileStore.chKey(pid, it)] == null }
+        if (list.isEmpty()) {
+            toast = L.t("هذه القائمة مرتبة ومفحوصة مسبقاً ✅ — لإعادة الفحص اضغط star unorganized",
+                "This list is already checked ✅ — press star unorganized to check again")
+            return
+        }
         checkJob?.cancel()
         checkProgress = 0 to list.size
         checkJob = viewModelScope.launch {
@@ -700,11 +794,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshParental()
     }
 
-    fun clearHealth() {
-        ProfileStore.clearHealth()
+    /** True when the current server has saved check results. */
+    fun isOrganized(): Boolean = health.keys.any { it.startsWith("$pid|") }
+
+    var confirmUnorganize by mutableStateOf<String?>(null)
+
+    /** "star unorganized": forgets the saved check results (current server, or all with [everything]). */
+    fun clearHealth(everything: Boolean = false) {
+        checkJob?.cancel(); checkProgress = null
+        if (everything || pid.isEmpty()) ProfileStore.clearHealth() else ProfileStore.clearHealthFor(pid)
         health = ProfileStore.health.value
         refreshParental()
-        toast = L.t("تم مسح نتائج الفحص", "Check results cleared")
+        toast = L.t("star unorganized ✓ — ظهرت كل القنوات، ويمكنك الفحص من جديد", "star unorganized ✓ — all channels shown, you can check again")
     }
 
     // ================================================================ VPN

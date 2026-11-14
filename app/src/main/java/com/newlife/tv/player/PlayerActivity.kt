@@ -66,6 +66,8 @@ import com.newlife.tv.data.PlayRequest
 import com.newlife.tv.data.ProfileStore
 import com.newlife.tv.net.Http
 import com.newlife.tv.net.Session
+import com.newlife.tv.net.IptvProvider
+import com.newlife.tv.net.ProviderPool
 import com.newlife.tv.net.StreamProbe
 import com.newlife.tv.record.RecordingService
 import kotlinx.coroutines.Job
@@ -90,16 +92,18 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_REQ = "req"
         private const val EXTRA_ENTRY = "entry"
         private const val EXTRA_INDEX = "index"
+        private const val EXTRA_PROFILE = "profile"
         const val ENGINE_EXO = "exo"
         const val ENGINE_VLC = "vlc"
         private const val START_TIMEOUT_MS = 20_000L
         private val gson = Gson()
 
-        fun start(ctx: Context, req: PlayRequest, entry: MediaEntry?, index: Int = -1) {
+        fun start(ctx: Context, req: PlayRequest, entry: MediaEntry?, index: Int = -1, profileId: String? = null) {
             val i = Intent(ctx, PlayerActivity::class.java)
                 .putExtra(EXTRA_REQ, gson.toJson(req))
                 .putExtra(EXTRA_ENTRY, entry?.let { gson.toJson(it) })
                 .putExtra(EXTRA_INDEX, index)
+                .putExtra(EXTRA_PROFILE, profileId)
             if (ctx !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(i)
         }
@@ -120,6 +124,11 @@ class PlayerActivity : ComponentActivity() {
         fun videoSize(): Pair<Int, Int>
         fun tracks(kind: Int) // 0 = video, 1 = audio, 2 = subtitles
     }
+
+    /** Server of the item being played (may differ from the home screen's server). */
+    private var prov: IptvProvider? = null
+    /** Zap-list positions already tried as a backup for the current channel. */
+    private val failTried = HashSet<Int>()
 
     private lateinit var container: FrameLayout
     private lateinit var overlay: LinearLayout
@@ -294,6 +303,8 @@ class PlayerActivity : ComponentActivity() {
         val r = intent.getStringExtra(EXTRA_REQ)?.let { gson.fromJson(it, PlayRequest::class.java) } ?: run { finish(); return }
         entry = intent.getStringExtra(EXTRA_ENTRY)?.let { gson.fromJson(it, MediaEntry::class.java) }
         index = intent.getIntExtra(EXTRA_INDEX, -1)
+        prov = ProviderPool.peek(intent.getStringExtra(EXTRA_PROFILE)) ?: Session.provider
+        failTried.clear()
         newSession()
         startPlayback(r, null)
     }
@@ -384,7 +395,7 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         val e = entry
-        val provider = Session.provider
+        val provider = prov
         // The server may refuse unknown players: look for a User-Agent it accepts (what makes MX/VLC work).
         if (!uaSearched && r.url.startsWith("http")) {
             uaSearched = true
@@ -403,7 +414,7 @@ class PlayerActivity : ComponentActivity() {
     private fun continueAfterUa(msg: String, containerIssue: Boolean) {
         val r = req ?: return
         val e = entry
-        val provider = Session.provider
+        val provider = prov
         if (isLive && retries < 2 && e != null && provider != null) {
             retries++
             info.text = L.t("إعادة طلب رابط جديد…", "Requesting a fresh link…") + " ($retries)"
@@ -414,6 +425,7 @@ class PlayerActivity : ComponentActivity() {
             }
             return
         }
+        if (isLive && tryBackupServer()) return
         showErrorDialog(msg, manual = false)
     }
 
@@ -421,13 +433,13 @@ class PlayerActivity : ComponentActivity() {
     private fun applyUserAgent(ua: String) {
         val r = req ?: return
         Session.uaOverride = ua
-        Session.provider?.profile?.let { p ->
+        prov?.profile?.let { p ->
             ProfileStore.profile(p.id)?.let { ProfileStore.saveProfile(it.copy(playerUserAgent = ua)) }
         }
         Toast.makeText(this, L.t("تم العثور على إعداد مناسب للخادم: ", "Found settings the server accepts: ") + ua.take(40), Toast.LENGTH_LONG).show()
         tried.clear(); retries = 0
         val e = entry
-        val provider = Session.provider
+        val provider = prov
         lifecycleScope.launch {
             val fresh = if (isLive && e != null && provider != null) runCatching { provider.resolve(e) }.getOrNull() else null
             startPlayback((fresh ?: r).copy(userAgent = ua), null)
@@ -510,7 +522,7 @@ class PlayerActivity : ComponentActivity() {
     private fun loadNowProgram() {
         val e = entry ?: return
         if (e.kind != ContentKind.LIVE || req?.isLive != true) return
-        val provider = Session.provider ?: return
+        val provider = prov ?: return
         lifecycleScope.launch {
             val list = runCatching { provider.epg(e) }.getOrDefault(emptyList())
             val now = list.firstOrNull { it.isNow }
@@ -525,7 +537,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun startKeepAlive() {
         keepAliveJob?.cancel()
-        val provider = Session.provider ?: return
+        val provider = prov ?: return
         if (req?.isLive != true) return
         keepAliveJob = lifecycleScope.launch {
             while (isActive) {
@@ -562,25 +574,83 @@ class PlayerActivity : ComponentActivity() {
         val list = Session.zapList
         val cur = entry ?: return
         if (list.isEmpty() || cur.kind != ContentKind.LIVE) return
-        val pos = if (index in list.indices && list[index].id == cur.id) index else list.indexOfFirst { it.id == cur.id }
+        val pos = currentZapPos()
         val next = ((pos + delta) % list.size + list.size) % list.size
-        val e = list[next]
-        zapInfo.text = (if (e.number > 0) "${e.number}  " else "") + e.title
-        zapInfo.visibility = View.VISIBLE
-        hideZapJob?.cancel()
-        hideZapJob = lifecycleScope.launch { delay(2500); zapInfo.visibility = View.GONE }
-        val provider = Session.provider ?: return
+        failTried.clear()
+        openZap(next, showName = true)
+    }
+
+    private fun currentZapPos(): Int {
+        val list = Session.zapList
+        val cur = entry ?: return -1
+        val owners = Session.zapOwners
+        val curOwner = prov?.profile?.id
+        if (index in list.indices && list[index].id == cur.id) return index
+        return list.indices.firstOrNull { list[it].id == cur.id && (owners.getOrNull(it) ?: curOwner) == curOwner }
+            ?: list.indexOfFirst { it.id == cur.id }
+    }
+
+    /** Opens item [i] of the zap list, on whichever server it belongs to. */
+    private fun openZap(i: Int, showName: Boolean) {
+        val list = Session.zapList
+        val e = list.getOrNull(i) ?: return
+        val owner = Session.zapOwners.getOrNull(i)
+        if (showName) {
+            val server = owner?.takeIf { it != prov?.profile?.id }?.let { ProfileStore.profile(it)?.displayName() }
+            zapInfo.text = (if (e.number > 0) "${e.number}  " else "") + e.title + (server?.let { "\n⇄ $it" } ?: "")
+            zapInfo.visibility = View.VISIBLE
+            hideZapJob?.cancel()
+            hideZapJob = lifecycleScope.launch { delay(2500); zapInfo.visibility = View.GONE }
+        }
         lifecycleScope.launch {
-            val r = runCatching { provider.resolve(e) }.getOrNull()
-            if (r == null) {
+            val result = runCatching {
+                if (owner != null) {
+                    val r = ProviderPool.resolve(this@PlayerActivity, owner, e)
+                    ProviderPool.peek(owner) to r
+                } else {
+                    val p = prov ?: return@launch
+                    p to p.resolve(e)
+                }
+            }.getOrNull()
+            if (result == null) {
                 Toast.makeText(this@PlayerActivity, L.t("تعذر فتح القناة", "Cannot open channel"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            entry = e; index = next
+            result.first?.let { prov = it }
+            entry = e; index = i
             newSession()
-            startPlayback(r, null)
+            startPlayback(result.second, null)
         }
     }
+
+    /**
+     * When a live channel fails, looks for the same channel among the favourites of the other
+     * servers and switches to it automatically.
+     */
+    private fun tryBackupServer(): Boolean {
+        val cur = entry ?: return false
+        if (cur.kind != ContentKind.LIVE) return false
+        val list = Session.zapList
+        val owners = Session.zapOwners
+        if (owners.isEmpty()) return false
+        val pos = currentZapPos()
+        if (pos >= 0) failTried += pos
+        val name = sameName(cur.title)
+        if (name.isEmpty()) return false
+        val curOwner = prov?.profile?.id
+        val j = list.indices.firstOrNull { it !in failTried && owners.getOrNull(it) != curOwner && sameName(list[it].title) == name }
+            ?: return false
+        failTried += j
+        val server = owners.getOrNull(j)?.let { ProfileStore.profile(it)?.displayName() } ?: ""
+        Toast.makeText(this, L.t("القناة لا تعمل — جارٍ التحويل إلى سيرفر: ", "Channel down — switching to server: ") + server, Toast.LENGTH_LONG).show()
+        openZap(j, showName = true)
+        return true
+    }
+
+    private fun sameName(t: String): String = t.lowercase()
+        .replace(Regex("^[a-z]{2,4}\\s*[:|]\\s*"), "")
+        .replace(Regex("\\b(hd|fhd|sd|uhd|4k|8k|hevc|h265|h\\.265|raw|backup|vip)\\b"), "")
+        .replace(Regex("[^\\p{L}\\p{N}]"), "")
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && !inPip()) {
@@ -682,7 +752,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun toggleFav() {
         val e = entry ?: return
-        val pid = Session.provider?.profile?.id ?: return
+        val pid = prov?.profile?.id ?: return
         val added = ProfileStore.toggleFavorite(pid, e)
         Toast.makeText(this, if (added) L.t("أضيفت إلى المفضلة", "Added to favorites") else L.t("أزيلت من المفضلة", "Removed from favorites"), Toast.LENGTH_SHORT).show()
     }

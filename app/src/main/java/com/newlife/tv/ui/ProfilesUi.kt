@@ -129,6 +129,8 @@ fun ProfilesScreen(vm: MainViewModel) {
             NButton(L.t("باقات مجانية", "Free packages"), Icons.Filled.Add) { showFree = true }
             if (!hide) BackupButtons(vm)
             NButton(L.t("الإعدادات", "Settings"), Icons.Filled.Settings) { vm.push(Screen.Settings) }
+            val mvCtx = LocalContext.current
+            NButton(L.t("▦ شاشات متعددة", "▦ Multi-view")) { vm.openMultiView(mvCtx) }
             NButton(L.t("🌿 استرخاء", "🌿 Relax")) { vm.push(Screen.Relax(sleep = false)) }
             NButton(L.t("🌙 النوم العميق", "🌙 Deep sleep")) { vm.push(Screen.Relax(sleep = true)) }
             NButton(if (hide) "B" else "A", Icons.Filled.AdminPanelSettings) { vm.toggleAdminMode() }
@@ -183,7 +185,7 @@ fun ProfilesScreen(vm: MainViewModel) {
             onDismissRequest = { confirmDelete = null },
             title = { Text(L.t("حذف الاشتراك؟", "Delete subscription?")) },
             text = { Text(p.displayName()) },
-            confirmButton = { TextButton(onClick = { ProfileStore.deleteProfile(p.id); confirmDelete = null }) { Text(L.t("حذف", "Delete"), color = Palette.Danger) } },
+            confirmButton = { TextButton(onClick = { ProfileStore.deleteProfile(p.id); com.newlife.tv.net.ProviderPool.remove(p.id); confirmDelete = null }) { Text(L.t("حذف", "Delete"), color = Palette.Danger) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text(L.t("إلغاء", "Cancel")) } },
         )
     }
@@ -368,10 +370,10 @@ fun ProfileEditor(vm: MainViewModel, initial: Profile?) {
         Spacer(Modifier.height(16.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NButton(L.t("حفظ وتسجيل الدخول", "Save & log in"), Icons.Filled.Login, primary = true) {
-                finalProfile()?.let { ProfileStore.saveProfile(it); vm.back(); vm.connect(it) }
+                finalProfile()?.let { ProfileStore.saveProfile(it); com.newlife.tv.net.ProviderPool.remove(it.id); vm.back(); vm.connect(it) }
             }
             NButton(L.t("حفظ", "Save"), Icons.Filled.Save) {
-                finalProfile()?.let { ProfileStore.saveProfile(it); vm.toast = L.t("تم الحفظ", "Saved"); vm.back() }
+                finalProfile()?.let { ProfileStore.saveProfile(it); com.newlife.tv.net.ProviderPool.remove(it.id); vm.toast = L.t("تم الحفظ", "Saved"); vm.back() }
             }
             NButton(L.t("إلغاء", "Cancel"), Icons.Filled.Close) { vm.back() }
         }

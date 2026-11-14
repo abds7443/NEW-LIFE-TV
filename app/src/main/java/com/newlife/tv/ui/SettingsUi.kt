@@ -122,7 +122,10 @@ fun SettingsContent(vm: MainViewModel) {
         ChoiceRow(L.t("القنوات المتوقفة", "Dead channels"),
             listOf("mark" to L.t("تمييز ✅ / ❌", "Mark ✅ / ❌"), "hide" to L.t("إخفاء المتوقفة", "Hide dead ones")),
             s.deadChannelMode) { v -> vm.setDeadMode(v) }
-        Row(Modifier.padding(vertical = 6.dp)) { NButton(L.t("مسح نتائج الفحص", "Clear check results")) { vm.clearHealth() } }
+        Text(L.t("نتائج الفحص محفوظة في الجهاز وتبقى بعد التحديث. لا تُمسح إلا بزر star unorganized.",
+            "Check results are saved on the device and survive updates. Only star unorganized erases them."), color = Palette.Text2, fontSize = 12.sp)
+        Row(Modifier.padding(vertical = 6.dp)) { NButton("star unorganized " + L.t("(كل السيرفرات)", "(all servers)"), danger = true) { vm.confirmUnorganize = "all" } }
+        UnorganizeDialog(vm)
 
         if (!s.adminHidden) {
         VpnSection(vm)

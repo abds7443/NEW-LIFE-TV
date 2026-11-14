@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Spa
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
@@ -164,6 +165,8 @@ fun HomeScreen(vm: MainViewModel) {
                 RailItem(sectionIcon(s), sectionLabel(s), vm.section == s) { vm.selectSection(s) }
             }
             Spacer(Modifier.height(10.dp))
+            val railCtx = LocalContext.current
+            RailItem(Icons.Filled.GridView, L.t("شاشات متعددة", "Multi-view"), false) { vm.openMultiView(railCtx) }
             RailItem(Icons.Filled.Spa, L.t("استرخاء", "Relax"), false) { vm.push(Screen.Relax(sleep = false)) }
             RailItem(Icons.Filled.Bedtime, L.t("النوم العميق", "Deep sleep"), false) { vm.push(Screen.Relax(sleep = true)) }
             RailItem(Icons.Filled.Refresh, L.t("تحديث", "Refresh"), false) { vm.refresh() }
@@ -384,6 +387,7 @@ private fun ChannelCheckBar(vm: MainViewModel, list: List<MediaEntry>) {
     ) {
         if (progress == null) {
             NButton(L.t("فحص القنوات", "Check channels"), Icons.Filled.NetworkCheck, enabled = list.isNotEmpty()) { vm.checkChannels(list) }
+            if (vm.isOrganized()) NButton("star unorganized", Icons.Filled.Refresh) { vm.confirmUnorganize = "server" }
         } else {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             Text("${progress.first} / ${progress.second}", color = Palette.Text2, fontSize = 13.sp)
@@ -394,6 +398,27 @@ private fun ChannelCheckBar(vm: MainViewModel, list: List<MediaEntry>) {
         FilterChip(selected = settings.deadChannelMode == "hide", onClick = { vm.setDeadMode("hide") },
             label = { Text(L.t("إخفاء المتوقفة", "Hide dead")) }, modifier = Modifier.focusRing(RoundedCornerShape(8.dp)))
     }
+    UnorganizeDialog(vm)
+}
+
+/** Confirmation for "star unorganized" (the saved check results are the only thing removed). */
+@Composable
+fun UnorganizeDialog(vm: MainViewModel) {
+    val what = vm.confirmUnorganize ?: return
+    val all = what == "all"
+    val close = { vm.confirmUnorganize = null }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("star unorganized") },
+        text = {
+            Text(if (all) L.t("سيتم مسح نتائج فحص القنوات لكل السيرفرات، وستظهر كل القنوات المخفية. هل تريد المتابعة؟",
+                "Check results of all servers will be erased and every hidden channel shown again. Continue?")
+            else L.t("سيتم مسح نتائج فحص القنوات لهذا السيرفر (${vm.activeProfile?.displayName() ?: ""})، وستظهر القنوات المخفية لتفحصها من جديد. هل تريد المتابعة؟",
+                "Check results of this server (${vm.activeProfile?.displayName() ?: ""}) will be erased and hidden channels shown again. Continue?"))
+        },
+        confirmButton = { NButton("star unorganized", danger = true) { close(); vm.clearHealth(everything = all) } },
+        dismissButton = { NButton(L.t("إلغاء", "Cancel")) { close() } },
+    )
 }
 
 /** Small search box above a channel / movie list (filters the current group). */
@@ -738,13 +763,80 @@ private fun EntryRow(vm: MainViewModel, e: MediaEntry, list: List<MediaEntry>) {
     }
 }
 
+/** Favourites of every server: playing one connects its server in the background if needed. */
 @Composable
 private fun FavoritesSection(vm: MainViewModel) {
+    val ctx = LocalContext.current
     val favs by ProfileStore.favorites.collectAsState()
-    val list = remember(favs, vm.activeProfile) { vm.favorites() }
-    if (list.isEmpty()) { EmptyHint(L.t("المفضلة فارغة — اضغط مطولاً على أي قناة أو فيلم لإضافته", "No favorites — long-press any channel or movie to add it")); return }
-    LazyColumn(Modifier.fillMaxSize().padding(12.dp)) {
-        items(list) { e -> EntryRow(vm, e, list) }
+    val all = remember(favs) { vm.allFavorites() }
+    if (all.isEmpty()) { EmptyHint(L.t("المفضلة فارغة — اضغط مطولاً على أي قناة أو فيلم لإضافته", "No favorites — long-press any channel or movie to add it")); return }
+    val servers = remember(all) { all.map { it.profileId }.distinct() }
+    var server by remember { mutableStateOf<String?>(null) }
+    var menu by remember { mutableStateOf<com.newlife.tv.data.Favorite?>(null) }
+    val list = remember(all, server) { if (server == null) all else all.filter { it.profileId == server } }
+    Column(Modifier.fillMaxSize().padding(12.dp)) {
+        Text(L.t("مفضلة كل السيرفرات — الأعلى/الأسفل في المشغل ينتقل بينها تلقائياً، وإذا تعطلت قناة يُجرَّب نفس الاسم في سيرفر آخر",
+            "Favorites of all servers — up/down in the player moves across them, and a dead channel switches to the same name on another server"),
+            color = Palette.Text2, fontSize = 12.sp)
+        if (servers.size > 1) LazyRow(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                FilterChip(selected = server == null, onClick = { server = null }, label = { Text(L.t("الكل", "All") + " (${all.size})") },
+                    modifier = Modifier.focusRing(RoundedCornerShape(8.dp)))
+            }
+            items(servers) { id ->
+                FilterChip(selected = server == id, onClick = { server = id },
+                    label = { Text(vm.serverName(id) + " (${all.count { it.profileId == id }})") },
+                    modifier = Modifier.focusRing(RoundedCornerShape(8.dp)))
+            }
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(list) { f -> FavRow(vm, f, all, servers.size > 1) { menu = f } }
+        }
+    }
+    menu?.let { f ->
+        val close = { menu = null }
+        AlertDialog(
+            onDismissRequest = close,
+            title = { Text(f.entry.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column {
+                    Text(vm.serverName(f.profileId), color = Palette.Text2)
+                    Spacer(Modifier.height(8.dp))
+                    NButton(L.t("تشغيل", "Play"), Icons.Filled.PlayArrow, primary = true) { close(); vm.playFavorite(ctx, f, all) }
+                    if (f.entry.kind == ContentKind.LIVE) {
+                        Spacer(Modifier.height(6.dp))
+                        NButton(L.t("فتح في الشاشات المتعددة", "Open in multi-view"), Icons.Filled.GridView) { close(); vm.addToMultiView(ctx, f.entry, f.profileId) }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    NButton(L.t("إزالة من المفضلة", "Remove from favorites"), Icons.Filled.Delete) { close(); vm.removeFavorite(f) }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = close) { Text(L.t("إغلاق", "Close")) } },
+        )
+    }
+}
+
+@Composable
+private fun FavRow(vm: MainViewModel, f: com.newlife.tv.data.Favorite, all: List<com.newlife.tv.data.Favorite>, showServer: Boolean, onMenu: () -> Unit) {
+    val ctx = LocalContext.current
+    val e = f.entry
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp).tvClick(onLongClick = onMenu) { vm.playFavorite(ctx, f, all) }.padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Logo(e.logo, 44.dp, fallback = when (e.kind) {
+            ContentKind.LIVE -> Icons.Filled.LiveTv; ContentKind.VOD -> Icons.Filled.Movie; ContentKind.SERIES -> Icons.Filled.VideoLibrary
+        })
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (showServer || f.profileId != vm.activeProfile?.id)
+                Text("⇄ " + vm.serverName(f.profileId), color = if (f.profileId == vm.activeProfile?.id) Palette.Text2 else Palette.Gold, fontSize = 11.sp, maxLines = 1)
+        }
+        Badge(when (e.kind) {
+            ContentKind.LIVE -> L.t("قناة", "Live"); ContentKind.VOD -> L.t("فيلم", "Movie"); ContentKind.SERIES -> L.t("مسلسل", "Series")
+        })
     }
 }
 

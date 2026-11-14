@@ -50,6 +50,12 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation"
             android:theme="@style/Theme.NewLife.Player" />
 
+        <activity
+            android:name=".multi.MultiViewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation"
+            android:theme="@style/Theme.NewLife.Player" />
+
         <service
             android:name=".record.RecordingService"
             android:exported="false"

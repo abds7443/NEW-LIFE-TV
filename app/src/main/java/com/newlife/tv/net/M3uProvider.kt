@@ -150,6 +150,7 @@ object M3uParser {
 
     fun parse(text: String): Result {
         val out = ArrayList<MediaEntry>()
+        val usedIds = HashSet<String>()
         var tvg = ""
         var attrs: Map<String, String> = emptyMap()
         var title = ""
@@ -214,8 +215,13 @@ object M3uParser {
                         else -> ContentKind.LIVE
                     }
                     val name = title.ifBlank { attrs["tvg-name"] ?: url.substringAfterLast('/') }
+                    // stable id: same channel keeps its id when the playlist is updated or reordered
+                    val base = Integer.toHexString((url + "|" + name).hashCode())
+                    var stableId = base
+                    var dup = 1
+                    while (!usedIds.add(stableId)) stableId = base + "_" + (dup++)
                     out += MediaEntry(
-                        id = Integer.toHexString(url.hashCode()) + "_" + out.size,
+                        id = stableId,
                         title = name,
                         logo = attrs["tvg-logo"] ?: attrs["logo"] ?: "",
                         categoryId = group,

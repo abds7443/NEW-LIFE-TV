@@ -11,10 +11,24 @@ class NewLifeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         ProfileStore.init(this)
+        lockAdminAfterUpdate()
         installCrashLogger()
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(NotificationChannel(CH_REC, "Recordings / التسجيلات", NotificationManager.IMPORTANCE_LOW))
+        }
+    }
+
+    /** After every install or update the hidden menus (device data, recordings, VPN) are hidden again: "B". */
+    private fun lockAdminAfterUpdate() {
+        runCatching {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val code = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+            val prefs = getSharedPreferences("app_state", Context.MODE_PRIVATE)
+            if (prefs.getLong("version_code", -1L) != code) {
+                ProfileStore.updateSettings { it.copy(adminHidden = true) }
+                prefs.edit().putLong("version_code", code).apply()
+            }
         }
     }
 
